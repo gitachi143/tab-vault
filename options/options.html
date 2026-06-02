@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tab Vault — History</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <header class="app-hdr">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <h1>Tab Vault</h1>
+      <span class="version">history</span>
+    </div>
+    <nav class="hdr-actions">
+      <button id="save-now" class="primary" title="Save a snapshot right now (Ctrl/Cmd+S)">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M17 3H5a2 2 0 0 0-2 2v14l4-2 4 2 4-2 4 2V5a2 2 0 0 0-2-2zm0 13.27-2-1-4 2-4-2-2 1V5h12v11.27z"/></svg>
+        Save snapshot
+      </button>
+      <label class="file-btn" title="Import JSON backup">
+        Import
+        <input type="file" id="import-file" accept="application/json,.json" hidden />
+      </label>
+      <button id="export-all" class="secondary" title="Export all snapshots to a JSON file">Export</button>
+      <button id="settings-toggle" class="secondary" title="Settings">⚙</button>
+    </nav>
+  </header>
+
+  <section id="settings-panel" class="panel" hidden>
+    <div class="panel-grid">
+      <label class="field">
+        <span>Auto-snapshot every</span>
+        <select id="auto-minutes">
+          <option value="0">Disabled (manual only)</option>
+          <option value="1">1 minute</option>
+          <option value="5">5 minutes</option>
+          <option value="10">10 minutes</option>
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="180">3 hours</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>New session after gap of</span>
+        <select id="session-gap">
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="120">2 hours</option>
+          <option value="240">4 hours</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Keep at most</span>
+        <select id="max-snapshots">
+          <option value="0">Unlimited</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Theme</span>
+        <select id="theme">
+          <option value="auto">Auto (system)</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+      <label class="field-row">
+        <input type="checkbox" id="live-enabled" />
+        <span>Keep a live crash-recovery snapshot (read-only, never auto-opens)</span>
+      </label>
+      <label class="field-row">
+        <input type="checkbox" id="confirm-restore" />
+        <span>Always confirm before restore (recommended)</span>
+      </label>
+      <div class="field-row danger-row">
+        <button id="clear-all" class="danger">Delete all snapshots…</button>
+      </div>
+    </div>
+    <p class="restore-note">
+      Tab Vault never opens tabs on its own. Restoration only happens when you
+      click a <strong>Restore</strong> button below.
+    </p>
+  </section>
+
+  <section class="toolbar">
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Search history — names, URLs, titles, groups…" />
+    </div>
+    <div class="stats-mini" id="stats-mini">–</div>
+  </section>
+
+  <main class="layout">
+    <aside class="list-pane">
+      <div class="list-head">
+        <span>Timeline</span>
+        <span id="list-count" class="muted">0</span>
+      </div>
+      <div id="timeline" class="timeline"></div>
+      <div id="snap-empty" class="empty" hidden>
+        <p>No snapshots yet.</p>
+        <p class="muted">Click <strong>Save snapshot</strong> above to start your history, or import a backup.</p>
+      </div>
+    </aside>
+
+    <section class="detail-pane">
+      <div id="detail-empty" class="detail-empty">
+        <p>Select a snapshot to see what was open, what changed, and (only if you ask) restore it.</p>
+      </div>
+      <article id="detail" class="detail" hidden></article>
+    </section>
+  </main>
+
+  <div id="modal-root"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>
