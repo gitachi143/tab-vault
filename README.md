@@ -373,16 +373,34 @@ chromeextension/
 └── tests/                     # 173 tests covering libs, background, no-auto-open
 ```
 
-## Tests (260 total)
+## Tests (292 total)
 
 ```
-node tests/test.mjs               # 89 lib + integration tests
-node tests/test_background.mjs    # 39 background message-handler tests
-node tests/test_sessions.mjs      # 32 session bundling + diff tests
-node tests/test_no_autoopen.mjs   # 32 invariant tests: nothing auto-opens/closes tabs
+node tests/test.mjs                # 89 lib + integration tests
+node tests/test_background.mjs     # 39 background message-handler tests
+node tests/test_sessions.mjs       # 32 session bundling + diff tests
+node tests/test_no_autoopen.mjs    # 32 invariant tests: nothing auto-opens/closes tabs
 node tests/test_storage_safety.mjs # 39 mutex / quota / repair / validation tests
-node tests/test_profile.mjs       # 29 multi-profile/browser + import validation tests
+node tests/test_profile.mjs        # 29 multi-profile/browser + import validation tests
+node tests/test_resilience.mjs     # 32 crash recovery, stress, race, edge-case tests
 ```
+
+### Resilience coverage
+
+The `test_resilience.mjs` suite simulates real-world failure modes:
+
+- **Startup with no windows yet** (Chrome session-restore racing our handler) — verifies we don't persist an empty snapshot.
+- **Manual save with no windows** still works (explicit user intent).
+- **Browser killed before clean shutdown** — verifies the live snapshot becomes a `crash` history entry on next launch *without* re-opening any tabs.
+- **Service-worker restart cycle** — `initOnce()` is idempotent, profile id and settings survive.
+- **250 tabs across 10 windows** — captures in under 2 s, restores in under 5 s.
+- **chrome:// / chrome-extension:// / about:blank URLs** preserved verbatim in snapshots.
+- **Snapshot deleted between list and restore** returns a clean error.
+- **Storage already populated when extension reloads** — existing data and label survive.
+- **50 sequential captures + concurrent alarm + manual race** — mutex keeps the index consistent (zero orphans).
+- **Hourly backup cycles fire** — zero tab mutations.
+- **Restore from a pruned snapshot** returns a clean error.
+- **Chrome restores tabs *after* our startup snapshot** — the live heartbeat catches up; nothing is lost.
 
 The **no-auto-open** suite verifies that across every non-restore code path (install, startup, alarms, tab events, group events, every non-restore message, keyboard shortcuts), `chrome.tabs.create` and `chrome.windows.create` are called **zero** times. Only an explicit `restore` or `restore-latest` message opens anything.
 
