@@ -17,7 +17,6 @@ const { seedWindow, reset, state } = harness;
 const utils    = await import('../lib/utils.js');
 const storage  = await import('../lib/storage.js');
 const snapshot = await import('../lib/snapshot.js');
-const restore  = await import('../lib/restore.js');
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -40,11 +39,6 @@ group('utils', () => {
   assert(typeof utils.uuid() === 'string', 'uuid returns string');
   assert(utils.uuid() !== utils.uuid(), 'uuid is unique');
   assert(/^\d{4}-\d{2}-\d{2}/.test(utils.formatDate(Date.now())), 'formatDate format');
-  assert(utils.normalizeUrlForRestore('chrome://newtab/') === 'chrome://newtab/', 'newtab pass through');
-  assert(utils.normalizeUrlForRestore('chrome-search://local-ntp/local-ntp.html') === 'chrome://newtab/', 'chrome-search normalized');
-  assert(utils.normalizeUrlForRestore('about:newtab') === 'chrome://newtab/', 'about:newtab normalized');
-  assert(utils.normalizeUrlForRestore('https://example.com/') === 'https://example.com/', 'normal URL untouched');
-  assert(utils.normalizeUrlForRestore('') === 'chrome://newtab/', 'empty URL → newtab');
   assert(utils.safeHostname('https://foo.com/x') === 'foo.com', 'safeHostname');
   assert(utils.safeHostname('not a url') === 'not a url', 'safeHostname fallback');
   assert(/just now|s ago/.test(utils.relativeTime(Date.now())), 'relativeTime now');
@@ -171,134 +165,6 @@ await group('storage: retention prunes oldest, keeps pinned', async () => {
 });
 
 // ============================================================
-await group('restore: new-windows mode recreates everything', async () => {
-  reset();
-  // Source state: one window with pinned + grouped + active
-  seedWindow({
-    focused: true,
-    tabs: [
-      { url: 'https://pin.com/', pinned: true },
-      { url: 'https://a.com/', active: true },
-      { url: 'https://b.com/', groupId: 200 },
-      { url: 'https://c.com/', groupId: 200 }
-    ],
-    groups: [{ id: 200, title: 'Reading', color: 'green', collapsed: true }]
-  });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-
-  // Wipe windows to simulate cold restore
-  state.windows.clear();
-  state.tabGroups = new Map();
-
-  const result = await restore.restoreSnapshot(snap, { mode: 'new-windows' });
-  eq(result.restored, 4, 'restored 4 tabs');
-  const wins = [...state.windows.values()];
-  eq(wins.length, 1, 'one window created');
-  const w = wins[0];
-  eq(w.tabs.length, 4, '4 tabs in restored window');
-
-  const pinned = w.tabs.filter(t => t.pinned);
-  eq(pinned.length, 1, 'pinned preserved');
-  eq(pinned[0].url, 'https://pin.com/', 'correct tab pinned');
-
-  // Groups recreated
-  const groups = [...(state.tabGroups || new Map()).values()];
-  eq(groups.length, 1, 'one group recreated');
-  eq(groups[0].title, 'Reading', 'group title preserved');
-  eq(groups[0].color, 'green', 'group color preserved');
-  eq(groups[0].collapsed, true, 'group collapsed preserved');
-
-  // The grouped tabs reference the new groupId
-  const grouped = w.tabs.filter(t => t.groupId === groups[0].id);
-  eq(grouped.length, 2, '2 tabs in group');
-  const groupedUrls = grouped.map(t => t.url).sort();
-  eq(groupedUrls, ['https://b.com/', 'https://c.com/'], 'correct tabs in group');
-});
-
-// ============================================================
-await group('restore: single-window combines multiple windows', async () => {
-  reset();
-  seedWindow({ tabs: [{ url: 'https://a.com/' }, { url: 'https://b.com/' }] });
-  seedWindow({ tabs: [{ url: 'https://c.com/' }] });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-
-  state.windows.clear();
-  state.tabGroups = new Map();
-
-  const result = await restore.restoreSnapshot(snap, { mode: 'single-window' });
-  eq(result.restored, 3, 'restored 3 tabs');
-  eq(state.windows.size, 1, 'one window');
-  const w = [...state.windows.values()][0];
-  eq(w.tabs.length, 3, '3 tabs combined');
-});
-
-// ============================================================
-await group('restore: current mode appends to current window', async () => {
-  reset();
-  seedWindow({ tabs: [{ url: 'https://src1.com/' }, { url: 'https://src2.com/' }] });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-
-  // Set up a target current window with 1 existing tab
-  state.windows.clear();
-  state.tabGroups = new Map();
-  seedWindow({ focused: true, tabs: [{ url: 'https://existing.com/' }] });
-  const target = [...state.windows.values()][0];
-
-  const result = await restore.restoreSnapshot(snap, { mode: 'current' });
-  eq(result.restored, 2, 'appended 2 tabs');
-  eq(target.tabs.length, 3, 'existing + 2 appended');
-});
-
-// ============================================================
-await group('restore: selective restore', async () => {
-  reset();
-  const w1 = seedWindow({
-    tabs: [
-      { url: 'https://w1-a.com/' },
-      { url: 'https://w1-b.com/' },
-      { url: 'https://w1-c.com/' }
-    ]
-  });
-  const w2 = seedWindow({ tabs: [{ url: 'https://w2-a.com/' }, { url: 'https://w2-b.com/' }] });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-
-  state.windows.clear();
-  state.tabGroups = new Map();
-
-  // Restore only window 1 entirely + index 1 from window 2
-  const selection = {
-    windowIds: new Set([w1]),
-    tabKeys: new Set([`${w2}:1`])
-  };
-  const result = await restore.restoreSnapshot(snap, { mode: 'new-windows', selection });
-  eq(result.restored, 3 + 1, '3 (full w1) + 1 (selected w2 tab) restored');
-  const wins = [...state.windows.values()];
-  eq(wins.length, 2, 'two windows created');
-  const sizes = wins.map(w => w.tabs.length).sort();
-  eq(sizes, [1, 3], 'one window with 3 tabs, one with 1');
-});
-
-// ============================================================
-await group('restore: settings.closeOthers triggers pre-restore snapshot', async () => {
-  reset();
-  // Existing 'live' session
-  seedWindow({ focused: true, tabs: [{ url: 'https://existing.com/' }] });
-  const before = await snapshot.captureAndPersist({ type: 'manual' });
-
-  // Restore with closeOthers
-  state.windows.clear();
-  seedWindow({ focused: true, tabs: [{ url: 'https://focused-target.com/' }] });
-  await restore.restoreSnapshot(before, { mode: 'new-windows', closeOthers: true });
-
-  // After closeOthers we expect only the new windows (the previous "current" was removed)
-  const wins = [...state.windows.values()];
-  // The window we created via seedWindow was removed; restored window remains
-  const urls = wins.flatMap(w => w.tabs.map(t => t.url));
-  assert(urls.includes('https://existing.com/'), 'restored URL present');
-  assert(!urls.includes('https://focused-target.com/'), 'previous focused window closed');
-});
-
-// ============================================================
 await group('snapshot: skips incognito windows', async () => {
   reset();
   seedWindow({ tabs: [{ url: 'https://normal.com/' }] });
@@ -309,18 +175,6 @@ await group('snapshot: skips incognito windows', async () => {
   eq(snap.windows[0].tabs[0].url, 'https://normal.com/', 'only normal kept');
 });
 
-// ============================================================
-await group('snapshot: URL normalization on restore', async () => {
-  reset();
-  seedWindow({ tabs: [{ url: 'chrome-search://local-ntp/local-ntp.html' }, { url: 'https://x.com/' }] });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-  state.windows.clear();
-  state.tabGroups = new Map();
-  await restore.restoreSnapshot(snap, { mode: 'new-windows' });
-  const w = [...state.windows.values()][0];
-  eq(w.tabs[0].url, 'chrome://newtab/', 'chrome-search rewritten to newtab');
-  eq(w.tabs[1].url, 'https://x.com/', 'normal URL preserved');
-});
 
 // ============================================================
 await group('storage: import round-trip preserves data', async () => {
@@ -377,78 +231,6 @@ await group('storage: usage reports bytes', async () => {
   assert(after > before, 'usage grew after writing snapshot');
 });
 
-// ============================================================
-await group('restore: active tab is set after restore', async () => {
-  reset();
-  seedWindow({ tabs: [
-    { url: 'https://a.com/' },
-    { url: 'https://b.com/', active: true },
-    { url: 'https://c.com/' }
-  ] });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-  state.windows.clear();
-  state.tabGroups = new Map();
-  await restore.restoreSnapshot(snap, { mode: 'new-windows' });
-  const w = [...state.windows.values()][0];
-  const active = w.tabs.find(t => t.active);
-  assert(active && active.url === 'https://b.com/', 'active tab preserved');
-});
-
-// ============================================================
-await group('restore: multiple groups in one window', async () => {
-  reset();
-  seedWindow({
-    tabs: [
-      { url: 'https://g1-a.com/', groupId: 1 },
-      { url: 'https://g1-b.com/', groupId: 1 },
-      { url: 'https://g2-a.com/', groupId: 2 },
-      { url: 'https://ungrouped.com/' }
-    ],
-    groups: [
-      { id: 1, title: 'First', color: 'blue' },
-      { id: 2, title: 'Second', color: 'red' }
-    ]
-  });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-  state.windows.clear();
-  state.tabGroups = new Map();
-  await restore.restoreSnapshot(snap, { mode: 'new-windows' });
-  const groups = [...(state.tabGroups || new Map()).values()];
-  eq(groups.length, 2, '2 groups recreated');
-  const titles = groups.map(g => g.title).sort();
-  eq(titles, ['First', 'Second'], 'group titles preserved');
-  const colors = groups.map(g => g.color).sort();
-  eq(colors, ['blue', 'red'], 'group colors preserved');
-});
-
-// ============================================================
-await group('restore: window state preserved (maximized)', async () => {
-  reset();
-  seedWindow({
-    state: 'maximized',
-    tabs: [{ url: 'https://a.com/' }]
-  });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-  state.windows.clear();
-  state.tabGroups = new Map();
-  await restore.restoreSnapshot(snap, { mode: 'new-windows' });
-  const w = [...state.windows.values()][0];
-  eq(w.state, 'maximized', 'window state preserved');
-});
-
-// ============================================================
-await group('restore: empty selection returns 0', async () => {
-  reset();
-  seedWindow({ tabs: [{ url: 'https://a.com/' }] });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-  state.windows.clear();
-  const r = await restore.restoreSnapshot(snap, {
-    mode: 'new-windows',
-    selection: { windowIds: new Set(), tabKeys: new Set() }
-  });
-  eq(r.restored, 0, 'no tabs restored from empty selection');
-  eq(state.windows.size, 0, 'no windows created');
-});
 
 // ============================================================
 await group('snapshot: live snapshot capture is identical to manual', async () => {
@@ -490,27 +272,6 @@ await group('storage: pin of missing snapshot returns null', async () => {
   reset();
   const r = await storage.setPinned('nonexistent', true);
   assert(r === null, 'pin of missing returns null');
-});
-
-// ============================================================
-await group('restore: selection with only tabKeys (no windowIds)', async () => {
-  reset();
-  const wid = seedWindow({ tabs: [
-    { url: 'https://0.com/' },
-    { url: 'https://1.com/' },
-    { url: 'https://2.com/' }
-  ] });
-  const snap = await snapshot.captureSnapshot({ type: 'manual' });
-  state.windows.clear();
-  state.tabGroups = new Map();
-  const r = await restore.restoreSnapshot(snap, {
-    mode: 'new-windows',
-    selection: { tabKeys: new Set([`${wid}:0`, `${wid}:2`]) }
-  });
-  eq(r.restored, 2, 'restored 2 selected tabs');
-  const w = [...state.windows.values()][0];
-  const urls = w.tabs.map(t => t.url).sort();
-  eq(urls, ['https://0.com/', 'https://2.com/'], 'correct tabs restored');
 });
 
 // ============================================================

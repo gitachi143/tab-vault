@@ -22,7 +22,6 @@ const { seedWindow, reset, state } = harness;
 
 const storage  = await import('../lib/storage.js');
 const snapshot = await import('../lib/snapshot.js');
-const restore  = await import('../lib/restore.js');
 
 await import('../background.js');
 
@@ -115,7 +114,7 @@ await grp('service worker restart: initOnce is idempotent', async () => {
 });
 
 // --------------------------------------------------------------------------
-await grp('stress: 250 tabs across 10 windows captures + restores cleanly', async () => {
+await grp('stress: 250 tabs across 10 windows captures cleanly', async () => {
   reset();
   await sendMessage({ type: 'set-settings', patch: { maxSnapshots: 0 } });
   for (let w = 0; w < 10; w++) {
@@ -128,14 +127,9 @@ await grp('stress: 250 tabs across 10 windows captures + restores cleanly', asyn
   eq(snap.stats.windowCount, 10, '10 windows captured');
   assert(captureMs < 2000, `capture under 2s, got ${captureMs}ms`);
 
-  // Restore the lot — fresh state
-  state.windows.clear(); state.tabGroups = new Map();
-  const t1 = Date.now();
-  const r = await sendMessage({ type: 'restore', id: snap.id, options: { mode: 'new-windows' } });
-  const restoreMs = Date.now() - t1;
-  eq(r.restored, 250, '250 tabs restored');
-  eq(state.windows.size, 10, '10 windows recreated');
-  assert(restoreMs < 5000, `restore under 5s, got ${restoreMs}ms`);
+  // Verify the snapshot round-trips through storage cleanly
+  const fetched = await sendMessage({ type: 'get-snapshot', id: snap.id });
+  eq(fetched.snapshot.stats.tabCount, 250, 'snapshot retrieved intact');
 });
 
 // --------------------------------------------------------------------------
@@ -161,17 +155,13 @@ await grp('chrome:// URLs (other than newtab) are preserved verbatim', async () 
 });
 
 // --------------------------------------------------------------------------
-await grp('snapshot deleted between list and restore returns clear error', async () => {
+await grp('deleted snapshot returns null on later fetch', async () => {
   reset();
   seedWindow({ tabs: [{ url: 'https://x.com/' }] });
   const { snapshot: snap } = await sendMessage({ type: 'capture' });
-  // Delete it
   await sendMessage({ type: 'delete', id: snap.id });
-  // Now try to restore — should error cleanly
-  let err = null;
-  try { await sendMessage({ type: 'restore', id: snap.id, options: { mode: 'new-windows' } }); }
-  catch (e) { err = e; }
-  assert(err && /no longer available|not found/i.test(err.message), `clean error, got: ${err?.message}`);
+  const r = await sendMessage({ type: 'get-snapshot', id: snap.id });
+  eq(r.snapshot, null, 'deleted snapshot returns null cleanly');
 });
 
 // --------------------------------------------------------------------------
@@ -261,7 +251,7 @@ await grp('hourly backup never opens / closes / modifies any tabs', async () => 
 });
 
 // --------------------------------------------------------------------------
-await grp('restore from a snapshot that was pruned by retention shows clean error', async () => {
+await grp('pruned snapshot fetch returns null cleanly', async () => {
   reset();
   await sendMessage({ type: 'set-settings', patch: { maxSnapshots: 3 } });
   seedWindow({ tabs: [{ url: 'https://x.com/' }] });

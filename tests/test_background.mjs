@@ -172,19 +172,6 @@ await grp('import rejects unrecognized payload', async () => {
   assert(err && /Unrecognized/.test(err.message), 'rejects unknown format');
 });
 
-await grp('restore via background actually opens windows', async () => {
-  reset();
-  await sendMessage({ type: 'set-settings', patch: { maxSnapshots: 0, confirmRestore: false } });
-  seedWindow({ tabs: [{ url: 'https://r1.com/' }, { url: 'https://r2.com/' }] });
-  const { snapshot } = await sendMessage({ type: 'capture' });
-
-  state.windows.clear();
-  state.tabGroups = new Map();
-  const r = await sendMessage({ type: 'restore', id: snapshot.id, options: { mode: 'new-windows' } });
-  eq(r.restored, 2, 'restored 2');
-  eq(state.windows.size, 1, 'one window created');
-});
-
 await grp('alarm fires → auto-snapshot is created', async () => {
   reset();
   await sendMessage({ type: 'set-settings', patch: { maxSnapshots: 0, autoSnapshotMinutes: 5 } });

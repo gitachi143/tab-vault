@@ -161,20 +161,11 @@ body {
   font-size: 11px; color: var(--fg-3);
 }
 .ftr-row { display: flex; justify-content: space-between; }
-.restore-row {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
-  gap: 8px;
+.observer-note {
+  margin-top: 6px; padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  color: var(--fg-3); font-size: 10px; text-align: center; letter-spacing: 0.02em;
 }
-.restore-link {
-  font: inherit; background: transparent;
-  border: 1px solid var(--border);
-  color: var(--fg-2);
-  padding: 5px 9px; border-radius: 6px;
-  cursor: pointer;
-}
-.restore-link:hover { background: var(--bg-2); color: var(--fg); border-color: var(--fg-3); }
-.restore-note { color: var(--fg-3); font-size: 10px; text-align: right; }
 
 .toast {
   position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);

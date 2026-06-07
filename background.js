@@ -20,36 +20,33 @@ import {
   repairIndex,
   storageUsage
 } from './lib/storage.js';
-import { restoreSnapshot } from './lib/restore.js';
 import { bundleIntoSessions, groupByDay, computeDiff, summarizeDiff } from './lib/sessions.js';
 import { validateImportPayload, ValidationError } from './lib/validate.js';
 import { buildBackupPayload, downloadBackup, postToWebhook } from './lib/backup.js';
 import { uuid, debounce, formatDateFile } from './lib/utils.js';
 
 // =====================================================================
-// HARD INVARIANTS — DO NOT VIOLATE WITHOUT REMOVING THIS COMMENT
+// HARD INVARIANT — OBSERVER-ONLY
 //
-// 1. Tab Vault never opens tabs or windows automatically.
-//    chrome.tabs.create and chrome.windows.create are reachable from exactly
-//    one code path: the `restore` / `restore-latest` message, which is only
-//    sent by an explicit user click in the popup or dashboard.
+// Tab Vault has NO ability to open, close, navigate, focus, move, replace,
+// pin, group, or otherwise mutate any tab or window. There is no restore
+// capability in this build. The user uses a separate tool for restoration.
 //
-// 2. Tab Vault never closes, replaces, navigates, focuses, moves, or
-//    otherwise mutates a user's tabs. The only call sites of
-//    chrome.tabs.update, chrome.tabs.remove, chrome.windows.remove,
-//    chrome.tabs.move are inside lib/restore.js — itself only reachable
-//    from #1.
+// What this extension does:
+//   * READS the browser state via chrome.windows.getAll / chrome.tabGroups.query
+//   * WRITES snapshots to chrome.storage.local
+//   * DOWNLOADS JSON backups via chrome.downloads
+//   * POSTS backups to a user-configured HTTPS webhook
 //
-// 3. Chrome's native "Continue where you left off" session restore is
-//    independent of Tab Vault. Tab Vault is a passive observer at startup:
-//    it captures whatever tabs Chrome has already restored and writes them
-//    to storage. It does not delay, block, interfere, or duplicate that
-//    process. If Chrome restores your tabs on launch, you get those tabs.
-//    Tab Vault's own restore is a manual backup option, not a replacement.
+// What this extension explicitly does NOT do:
+//   * Call chrome.tabs.create / .update / .remove / .move
+//   * Call chrome.windows.create / .remove / .update
+//   * Call chrome.tabs.group / chrome.tabGroups.update
+//   * Auto-restore on crash, startup, or any other lifecycle event
 //
-// All "alarms, tab events, startup, crash detection" code paths only READ
-// from the browser and WRITE to chrome.storage.local. They never call any
-// mutating Chrome API.
+// Chrome's native "Continue where you left off" session restore is the
+// only thing that opens tabs on this user's machine. Tab Vault is a
+// passive observer that records what Chrome has open — nothing more.
 // =====================================================================
 
 const ALARM_AUTO = 'tv-auto-snapshot';
@@ -308,17 +305,6 @@ async function handleMessage(msg) {
       const diff = computeDiff(a, b);
       return { diff, summary: summarizeDiff(diff) };
     }
-    case 'restore-latest': {
-      const idx = await getIndex();
-      if (idx.length === 0) throw new Error('No snapshots to restore');
-      const newest = idx[0];
-      const snap = await getSnapshot(newest.id);
-      if (!snap) throw new Error('Snapshot no longer available');
-      // Safety net: take a pre-restore snapshot so the user can always roll back.
-      try { await captureAndPersist({ type: 'pre-restore', name: 'Before restore (auto-saved)' }); } catch {}
-      const result = await restoreSnapshot(snap, { mode: msg.mode || 'new-windows' });
-      return { restored: result.restored, id: newest.id, name: newest.name };
-    }
     case 'get-snapshot':
       return { snapshot: await getSnapshot(msg.id) };
     case 'capture': {
@@ -332,15 +318,6 @@ async function handleMessage(msg) {
       return { snapshot: await renameSnapshot(msg.id, msg.name) };
     case 'pin':
       return { snapshot: await setPinned(msg.id, msg.pinned) };
-    case 'restore': {
-      const snap = await getSnapshot(msg.id);
-      if (!snap) throw new Error('Snapshot no longer available');
-      // Safety net: always take a pre-restore snapshot before any restore.
-      try { await captureAndPersist({ type: 'pre-restore', name: 'Before restore (auto-saved)' }); } catch {}
-      const selection = deserializeSelection(msg.options?.selection);
-      const result = await restoreSnapshot(snap, { ...msg.options, selection });
-      return result;
-    }
     case 'get-settings':
       return { settings: await getSettings() };
     case 'set-settings': {
@@ -423,14 +400,6 @@ async function handleMessage(msg) {
     default:
       throw new Error(`Unknown message: ${msg?.type}`);
   }
-}
-
-function deserializeSelection(sel) {
-  if (!sel) return null;
-  const out = {};
-  if (Array.isArray(sel.windowIds)) out.windowIds = new Set(sel.windowIds);
-  if (Array.isArray(sel.tabKeys)) out.tabKeys = new Set(sel.tabKeys);
-  return out;
 }
 
 async function importPayload(payload, merge) {

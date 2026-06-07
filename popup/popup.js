@@ -75,13 +75,9 @@ async function loadRecent() {
     li.textContent = 'No snapshots yet. Save your first one above.';
     ul.appendChild(li);
     $('#last-saved').textContent = 'No snapshots yet';
-    $('#restore-latest').disabled = true;
-    $('#restore-latest').style.opacity = '0.5';
     return;
   }
   $('#last-saved').textContent = `Last: ${relativeTime(index[0].timestamp)}`;
-  $('#restore-latest').disabled = false;
-  $('#restore-latest').style.opacity = '1';
 
   // Show only recent 5 — clicking each opens the history page with that snapshot.
   for (const e of index.slice(0, 5)) {
@@ -125,26 +121,6 @@ async function saveNow() {
   }
 }
 
-async function restoreLatest() {
-  // Confirm explicitly. This is the ONLY popup path that opens tabs.
-  const { index } = await send({ type: 'list-index' });
-  if (!index || index.length === 0) { toast('No snapshots to restore'); return; }
-  const latest = index[0];
-  const willOpen = latest.stats?.tabCount ?? 0;
-  const ok = confirm(
-    `Restore "${latest.name}"?\n\n` +
-    `This will open ${willOpen} tab${willOpen === 1 ? '' : 's'} in new windows.\n\n` +
-    `Tab Vault never opens tabs on its own — this is the only action that does.`
-  );
-  if (!ok) return;
-  try {
-    const r = await send({ type: 'restore-latest', mode: 'new-windows' });
-    toast(`Opened ${r.restored} tabs`);
-  } catch (e) {
-    toast(`Restore failed: ${e.message}`);
-  }
-}
-
 document.addEventListener('DOMContentLoaded', async () => {
   await applyTheme();
   await reportBrowser();
@@ -153,7 +129,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#refresh').addEventListener('click', () => { loadStats(); loadRecent(); });
   $('#see-all').addEventListener('click', () => chrome.runtime.openOptionsPage());
   $('#open-dashboard').addEventListener('click', () => chrome.runtime.openOptionsPage());
-  $('#restore-latest').addEventListener('click', restoreLatest);
   loadStats();
   loadRecent();
 });

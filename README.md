@@ -2,9 +2,7 @@
 
 A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have open over time**, bundles snapshots into sessions like Google Docs version history, and lets you browse, search, and diff the history.
 
-> **Tab Vault is a backup, not a replacement for Chrome's session restore.** Chrome's "Continue where you left off" is your primary safety net. Tab Vault is a passive observer that records what's open so you can browse the history and, if you ever need it, restore from any past point. It never closes, opens, modifies, or duplicates a tab on its own.
-
-> **Tab Vault never opens tabs on its own.** The only code path that opens a tab or window runs when you click a **Restore** button. Lifecycle events, alarms, tab events, hourly backups, and crash detection only read and write storage.
+> **Tab Vault is observer-only.** It has zero ability to open, close, navigate, focus, move, or pin tabs. There is no restore feature in this build — the user has a separate tool for that. Tab Vault only reads the browser state, writes snapshots to local storage, and optionally exports them to a JSON file or HTTPS webhook.
 
 > **Multi-profile + multi-browser aware.** Each Chrome / Brave / Edge profile keeps its own independent history (enforced by the browser's per-profile storage). The popup chip shows `Browser · Label` (e.g. `Brave · Work`) so you always know which vault you're looking at. Set a label like "Work" or "Personal" in settings and it shows up in the chip and bakes into export filenames. Importing a backup from another profile triggers a confirmation. If you point multiple installs at the same scheduled-backup webhook, you'll receive a separate email per browser+profile combo, with the browser name in the subject line.
 
@@ -18,15 +16,22 @@ A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have
 - **Diff per snapshot** — each snapshot shows what was opened and closed vs. the previous snapshot in the same session (Google-Docs-style change view).
 - **Search** across snapshot names and types.
 - **Pin** snapshots so retention pruning never touches them.
-- **JSON export / import** — back up and restore your *history* to a file. The export contains every snapshot.
-- **Restore** is explicit, separate, and confirmed:
-  - **Popup:** one small footer link, "Restore last stored session" — uses the most recent snapshot, opens it in new windows, with a confirmation.
-  - **Dashboard:** every snapshot has its own restore controls (new windows / single window / append-to-current / selected-only).
+- **JSON export / import** — back up your history to a file or import an older backup.
+- **Scheduled off-device backups** — once a day by default, optional, sent to a local Downloads folder and/or a user-configured HTTPS webhook.
 - **Light / Dark / Auto** theme.
 - **Keyboard shortcuts**:
   - `Ctrl/Cmd + Shift + S` — save snapshot
   - `Ctrl/Cmd + Shift + E` — open the history dashboard
   - Inside the dashboard: `Ctrl/Cmd + S` save · `Ctrl/Cmd + /` focus search.
+
+## What it explicitly does NOT do
+
+- Open tabs. Ever. Not on click, not on schedule, not on crash recovery.
+- Close, move, navigate, focus, or pin tabs.
+- Modify any browser state.
+- Make any network request other than the user-configured backup webhook.
+
+If you want restoration, use your separate restore tool. Tab Vault gives you the **history + the JSON backup**; that's its job.
 
 ## Install from GitHub (Chrome or Brave)
 
@@ -100,24 +105,25 @@ What you get with multiple installs:
 ## How everything works
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Tab Vault                                │
-│                                                                  │
-│  Periodic + manual snapshots ──► chrome.storage.local            │
-│       (every 10 min default)            │                        │
-│                                         │                        │
-│       Tab events ──► live snapshot ◄────┘                        │
-│       (debounced 4s)    (read-only, never auto-restored)         │
-│                                                                  │
-│  YOU click Restore ◄── popup OR dashboard ──► open new windows   │
-│                       (this is the ONLY way tabs are opened)     │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                          Tab Vault                                │
+│                  (observer — never opens tabs)                    │
+│                                                                   │
+│   Periodic + manual snapshots ──► chrome.storage.local            │
+│        (every 10 min default)            │                        │
+│                                          │                        │
+│        Tab events ──► live snapshot ◄────┘                        │
+│        (debounced 4s)    (read-only, never used to auto-restore)  │
+│                                                                   │
+│   Scheduled backup ──► Downloads/tab-vault/  AND/OR  HTTPS webhook│
+│   (default once a day, opt-in)                                    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Two surfaces
 
-- **Popup** (toolbar icon) — quick view: current stats, save button, last few snapshots, "View history" link, and a small footer link to restore the most recent snapshot.
-- **Dashboard** (the options page, opens in its own tab) — full timeline of snapshots grouped by day → session → snapshot, with diff between consecutive snapshots, search, settings, import/export, and explicit restore controls.
+- **Popup** (toolbar icon) — quick view: current stats, save button, last few snapshots, "View history" link.
+- **Dashboard** (the options page, opens in its own tab) — full timeline of snapshots grouped by day → session → snapshot, with diff between consecutive snapshots, search, settings, import/export.
 
 ### What a snapshot contains
 
@@ -135,7 +141,6 @@ Every snapshot captures, for every non-incognito Chrome / Brave window:
 | Browser start | `startup` | once on browser launch |
 | Service-worker live heartbeat | `live` (read-only) | every 1 min, updated also on tab events |
 | Detected crash on next launch | `crash` | once, when previous-session live snapshot survives |
-| Before any restore | `pre-restore` | one safety snapshot, so you can always undo |
 
 ### Storage layout
 
@@ -149,9 +154,9 @@ Everything is in `chrome.storage.local` (per-profile, isolated by Chrome itself)
 
 ### What is *guaranteed* never to happen
 
-- **Tab Vault never opens a tab or window unless you click Restore.** Tested by 13 invariant tests that fire every other code path.
+- **Tab Vault never opens, closes, navigates, focuses, moves, or pins a tab. Period.** Verified by 108 observer-only invariant tests + a static check that scans every source file for forbidden Chrome API calls.
 - **Profiles never see each other's history.** Chrome's per-profile storage isolates them; we add a profile UUID on top so cross-profile imports are flagged.
-- **No network traffic.** Zero. No analytics, no sync server, no telemetry.
+- **No outbound network traffic** other than your own configured backup webhook. No analytics, no sync server, no telemetry.
 - **Incognito windows are never recorded.**
 
 ---
@@ -175,19 +180,14 @@ Everything is in `chrome.storage.local` (per-profile, isolated by Chrome itself)
   - **Changes since previous snapshot** — two columns ("Opened" / "Closed") listing the URLs that came and went.
   - **Windows and tab groups** — exactly as they were at that moment, with favicons, pinned markers, group colors.
 
-### Restore (the only thing that opens tabs)
+### How to bring tabs back
 
-Three places, all explicit:
+Tab Vault doesn't open tabs itself. The history is available in two places:
 
-1. **Popup → "Restore last stored session"** (footer). Confirms first, then opens the most recent snapshot in new windows.
-2. **Dashboard → click a snapshot → "Restore this snapshot…"**. Confirms first, then opens that snapshot in new windows. Also auto-saves a `pre-restore` snapshot so you can undo by restoring that one.
-3. **Dashboard → "More restore modes ▾"** offers three layouts:
-   - **New windows** — one new window per saved window (recreates layout exactly).
-   - **Single window** — combine everything into one new window.
-   - **Append to current window** — add the saved tabs alongside whatever you have open.
-4. **Dashboard → check the box next to specific windows or tabs → "Restore selected…"** — opens only what you picked.
+1. **Browse the dashboard.** Click any snapshot in the timeline — the detail pane lists every URL with title and favicon. Use the **⎘ copy** button next to a row to copy a single URL.
+2. **Export to JSON.** Dashboard header → **Export** downloads a complete backup file. Hand that file to your separate restore tool.
 
-Every restore is confirmed by default. Toggle off in settings if you don't want the prompt.
+The scheduled backup (settings → ⚙) does this automatically — daily by default — to your `Downloads/tab-vault/` folder, or POSTs it to a webhook of your choice.
 
 ### Pin snapshots you care about
 
@@ -213,7 +213,6 @@ Top of dashboard → search box, or `Ctrl/Cmd + /` to focus it. Searches snapsho
 | **Theme** | Light / Dark / Auto (follow system). |
 | **Profile label** | Name this Chrome profile so the popup chip and export filename are recognisable. |
 | **Crash-recovery live snapshot** | Keep updating the read-only crash snapshot. Recommended on. |
-| **Always confirm before restore** | Show a confirmation modal before opening tabs. Strongly recommended on. |
 | **Run scheduled backup** | Bundle all snapshots into JSON on a fixed interval (see below). Off by default. |
 | **Save to Downloads/tab-vault/** | Backup file lands in your local Downloads folder. |
 | **Backup interval** | 30 min, hourly, 6h, 12h, daily (default), 2-day, weekly. |
@@ -256,7 +255,7 @@ To temporarily disable without losing data, use the toggle on the extension card
 
 - **"This extension may have been corrupted" / red Errors button** — usually means the folder was moved after loading. Click Remove, re-run **Load unpacked**, pick the new location.
 - **Snapshots not auto-saving** — open the dashboard → ⚙ → confirm **Auto-snapshot every** is set to something > 0. Chrome's alarms minimum is 1 minute.
-- **Tab favicons missing on restore** — favicons are stored as URLs; if the server is unreachable when the tab opens, the browser falls back to default.
+- **Favicons appear blank in old snapshots** — favicons are stored as URLs; if you view a snapshot from a site that's now unreachable, the browser falls back to a default. The URL itself is always preserved.
 - **`chrome://newtab` opened instead of the saved URL** — special pages like `chrome://newtab`, `chrome-search://`, and `edge://newtab` cannot be programmatically opened by extensions. We route them to the new-tab page.
 - **Snapshot disappeared after pruning** — bump **Keep at most** in settings, or pin (★) the ones you want forever.
 - **Two profiles showing the same data** — they shouldn't, ever. Each Chrome profile has separate storage. If you see this, the most likely cause is that you're actually in the same profile in two windows. Check the profile chip in the popup header.
@@ -281,12 +280,13 @@ To temporarily disable without losing data, use the toggle on the extension card
 Click any snapshot to see:
 - The exact tabs and windows that were open
 - What changed since the previous snapshot in the session ("Opened" / "Closed")
-- A **Restore this snapshot** button (with confirmation)
+- A ⎘ button next to each tab to copy its URL
+- Export this single snapshot as JSON for use with your separate restore tool
 
 ## Where data lives
 
 - Snapshots are stored in `chrome.storage.local` under their own keys (`snap:<uuid>`) with a fast index at `snap:index`.
-- A live snapshot at `tv:live` is rewritten on tab events plus a 1-minute heartbeat. **It is read-only from the user's perspective** — Tab Vault never auto-opens those tabs. On the next browser start, if a previous-session live snapshot is found, it's promoted into the history as a `crash` snapshot you can manually restore.
+- A live snapshot at `tv:live` is rewritten on tab events plus a 1-minute heartbeat. **It is read-only from the user's perspective** — Tab Vault never auto-opens those tabs. On the next browser start, if a previous-session live snapshot is found, it's promoted into the history as a `crash` snapshot so you have a record of what was open before the crash. Tabs are not auto-opened; use your separate restore tool with this snapshot if you want them back.
 - `unlimitedStorage` is requested so dense histories don't run into the default 5 MB cap.
 
 ## Settings (defaults are tuned for dense logging)
@@ -297,7 +297,6 @@ Click any snapshot to see:
 | New-session gap | 60 minutes |
 | Max retained snapshots (pinned always kept) | 200 |
 | Crash-recovery live snapshot | Enabled (read-only) |
-| Confirm before restore | Enabled |
 | Profile label (this Chrome profile) | empty |
 | Theme | Auto (system) |
 
@@ -305,12 +304,12 @@ Click any snapshot to see:
 
 | Risk | Mitigation |
 |---|---|
-| Tab Vault interfering with Chrome's session restore | Tab Vault never calls `chrome.tabs.create/update/remove/move` or `chrome.windows.create/remove` outside the explicit user-clicked restore path. Tested by 32 invariant tests covering install, startup, alarms, tab/window/group events, hourly backup firings, and keyboard shortcuts. |
+| Tab Vault interfering with Chrome's session restore | Tab Vault never calls `chrome.tabs.create/update/remove/move` or `chrome.windows.create/remove` anywhere. Verified by 108 invariant tests (including a static source-file scan) covering install, startup, alarms, every tab/window/group event, every message handler, scheduled-backup firings, and keyboard shortcuts. |
+| Tab Vault opening tabs by accident | Impossible — `lib/restore.js` was deleted; no module imports `chrome.tabs.create` anywhere; tests fail the build if any source file does. |
 | Two snapshot writes racing (alarm + manual click) | Promise-chain mutex serializes every index-touching operation in `lib/storage.js` |
 | Storage quota exceeded | `safeSet()` catches `QUOTA*` errors, prunes oldest unpinned snapshot, retries once; pinned never touched |
 | Index points at a deleted key | `repairIndex()` runs on every service worker startup |
 | Snapshot rendered then deleted before view | Dashboard shows "no longer available" state instead of crashing |
-| Restore opens the wrong tabs | A `pre-restore` snapshot is auto-saved before every restore — undo is one click |
 | Malformed import file | Strict shape validation (`lib/validate.js`) rejects the entire file before any storage write |
 | Cross-profile import confusion | `inspect-import` flags the profile mismatch; confirmation prompt before commit |
 | Service worker killed mid-task | Background re-inits via `_ready` gate on first message after restart; no half-state visible |
@@ -328,7 +327,7 @@ Click any snapshot to see:
       "id": "uuid",
       "schema": 1,
       "name": "Snapshot • 2026-05-24 14:00",
-      "type": "manual|auto|startup|crash|pre-restore|import",
+      "type": "manual|auto|startup|crash|import",
       "timestamp": 1716393600000,
       "pinned": false,
       "windows": [
@@ -364,7 +363,6 @@ chromeextension/
 │   ├── utils.js
 │   ├── storage.js             # chrome.storage.local + index
 │   ├── snapshot.js            # capture
-│   ├── restore.js             # restore (only invoked by explicit user click)
 │   └── sessions.js            # session bundling + diffs (pure)
 ├── popup/                     # toolbar popup
 ├── options/                   # full dashboard
@@ -373,16 +371,16 @@ chromeextension/
 └── tests/                     # 173 tests covering libs, background, no-auto-open
 ```
 
-## Tests (292 total)
+## Tests (327 total)
 
 ```
-node tests/test.mjs                # 89 lib + integration tests
-node tests/test_background.mjs     # 39 background message-handler tests
+node tests/test.mjs                # 52 lib + integration tests
+node tests/test_background.mjs     # 37 background message-handler tests
 node tests/test_sessions.mjs       # 32 session bundling + diff tests
-node tests/test_no_autoopen.mjs    # 32 invariant tests: nothing auto-opens/closes tabs
+node tests/test_no_autoopen.mjs    # 108 observer-only invariant tests (incl. static source scan)
 node tests/test_storage_safety.mjs # 39 mutex / quota / repair / validation tests
 node tests/test_profile.mjs        # 29 multi-profile/browser + import validation tests
-node tests/test_resilience.mjs     # 32 crash recovery, stress, race, edge-case tests
+node tests/test_resilience.mjs     # 30 crash recovery, stress, race, edge-case tests
 ```
 
 ### Resilience coverage
@@ -393,16 +391,21 @@ The `test_resilience.mjs` suite simulates real-world failure modes:
 - **Manual save with no windows** still works (explicit user intent).
 - **Browser killed before clean shutdown** — verifies the live snapshot becomes a `crash` history entry on next launch *without* re-opening any tabs.
 - **Service-worker restart cycle** — `initOnce()` is idempotent, profile id and settings survive.
-- **250 tabs across 10 windows** — captures in under 2 s, restores in under 5 s.
+- **250 tabs across 10 windows** — captures in under 2 s; round-trips through storage intact.
 - **chrome:// / chrome-extension:// / about:blank URLs** preserved verbatim in snapshots.
-- **Snapshot deleted between list and restore** returns a clean error.
+- **Snapshot deleted between list and fetch** returns `null` cleanly without crashing the dashboard.
 - **Storage already populated when extension reloads** — existing data and label survive.
 - **50 sequential captures + concurrent alarm + manual race** — mutex keeps the index consistent (zero orphans).
 - **Hourly backup cycles fire** — zero tab mutations.
 - **Restore from a pruned snapshot** returns a clean error.
 - **Chrome restores tabs *after* our startup snapshot** — the live heartbeat catches up; nothing is lost.
 
-The **no-auto-open** suite verifies that across every non-restore code path (install, startup, alarms, tab events, group events, every non-restore message, keyboard shortcuts), `chrome.tabs.create` and `chrome.windows.create` are called **zero** times. Only an explicit `restore` or `restore-latest` message opens anything.
+The **observer-only** suite is the strongest invariant in the codebase:
+
+- A **static check** opens every source file (`background.js`, all of `lib/`, popup, dashboard) and asserts none of them contain `chrome.tabs.create / .update / .remove / .move`, `chrome.windows.create / .remove / .update`, `chrome.tabs.group`, or `chrome.tabGroups.update`. If any of those strings appears as a real call (not in a comment), the suite fails the build.
+- A **file-existence check** asserts `lib/restore.js` is gone.
+- **Runtime checks** fire every event (install, startup, alarms, tab/window/group events, keyboard shortcuts) and every message handler and verify `chrome.tabs.create / .update / .remove`, `chrome.windows.create / .remove`, `chrome.tabs.group` counters all stay at zero.
+- Confirms `restore` and `restore-latest` messages return "Unknown message" — they simply don't exist anymore.
 
 The **storage-safety** suite verifies the write mutex serializes concurrent operations, the quota-retry handler prunes oldest unpinned snapshots when storage is full (and never touches pinned ones), the index repair removes orphans, and the import validator rejects malformed JSON without partial application.
 

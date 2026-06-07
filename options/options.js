@@ -10,9 +10,7 @@ const state = {
   currentDiff: null,       // diff vs previous in session
   selectedId: null,
   query: '',
-  settings: null,
-  // window selection for selective restore
-  selection: new Map()
+  settings: null
 };
 
 function send(msg) {
@@ -51,7 +49,6 @@ async function loadSettings() {
   $('#max-snapshots').value = String(settings.maxSnapshots);
   $('#theme').value = settings.theme;
   $('#live-enabled').checked = !!settings.liveSnapshotEnabled;
-  $('#confirm-restore').checked = !!settings.confirmRestore;
   $('#profile-label').value = settings.profileLabel || '';
   $('#backup-enabled').checked = !!settings.hourlyBackupEnabled;
   $('#backup-download').checked = !!settings.hourlyBackupDownload;
@@ -225,7 +222,6 @@ function renderSnapRow(e) {
 
 async function selectSnapshot(id) {
   state.selectedId = id;
-  state.selection = new Map();
   $$('.snap-row').forEach(el => el.classList.toggle('active', el.dataset.id === id));
 
   let snapshot = null;
@@ -308,16 +304,11 @@ function renderDetail() {
 
   const actions = document.createElement('div');
   actions.className = 'detail-actions';
-  const btnRestore = mkBtn('Restore this snapshot…', 'restore-primary', () => doRestore('new-windows'));
-  btnRestore.title = 'Opens new windows for every saved window. Confirms first.';
-  const btnRestoreSelected = mkBtn('Restore selected…', '', () => doRestore('selected'));
-  btnRestoreSelected.id = 'btn-restore-selected';
-  const btnAdvanced = mkBtn('More restore modes ▾', '', (e) => openRestoreMenu(e));
   const btnExport = mkBtn('Export', '', exportCurrent);
   const btnRename = mkBtn('Rename', '', renameCurrent);
   const btnPin = mkBtn(snap.pinned ? 'Unpin' : 'Pin', '', togglePin);
   const btnDelete = mkBtn('Delete', 'danger', deleteCurrent);
-  actions.append(btnRestore, btnRestoreSelected, btnAdvanced, btnExport, btnRename, btnPin, btnDelete);
+  actions.append(btnExport, btnRename, btnPin, btnDelete);
 
   head.append(titleEl, actions, meta);
   detail.append(head);
@@ -330,8 +321,6 @@ function renderDetail() {
   for (const w of snap.windows) {
     detail.append(renderWindowBlock(w));
   }
-
-  updateRestoreSelectedDisabled();
 }
 
 function renderDiffSection({ diff, summary }) {
@@ -382,18 +371,6 @@ function diffCol(kind, label, items) {
   }
   div.append(ul);
   return div;
-}
-
-function openRestoreMenu(ev) {
-  // Simple inline confirm modal listing the three modes.
-  ev.preventDefault();
-  showChoiceModal('Choose restore mode', [
-    { label: 'New windows (one per saved window)', value: 'new-windows', desc: 'Recreates the window layout exactly.' },
-    { label: 'Single new window', value: 'single-window', desc: 'All tabs combined into one new window.' },
-    { label: 'Append to current window', value: 'current', desc: 'Adds the saved tabs to the window you have open now.' }
-  ]).then(mode => {
-    if (mode) doRestore(mode);
-  });
 }
 
 function showChoiceModal(title, options) {
@@ -452,12 +429,6 @@ function renderWindowBlock(w) {
 
   const head = document.createElement('div');
   head.className = 'window-head';
-  const check = document.createElement('input');
-  check.type = 'checkbox';
-  check.title = 'Select window for selective restore';
-  check.addEventListener('click', e => e.stopPropagation());
-  check.addEventListener('change', () => toggleWindowSelection(w, check.checked, block));
-
   const title = document.createElement('div');
   title.className = 'title';
   title.textContent = w.focused ? `Window ${w.windowId} (focused)` : `Window ${w.windowId}`;
@@ -471,9 +442,8 @@ function renderWindowBlock(w) {
   chev.className = 'chev';
   chev.textContent = '▾';
 
-  head.append(check, title, counts, chev);
-  head.addEventListener('click', (ev) => {
-    if (ev.target === check) return;
+  head.append(title, counts, chev);
+  head.addEventListener('click', () => {
     block.classList.toggle('collapsed');
     chev.textContent = block.classList.contains('collapsed') ? '▸' : '▾';
   });
@@ -528,13 +498,6 @@ function renderTabRow(w, t) {
   const li = document.createElement('li');
   li.className = 'tab-row';
 
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.title = 'Include in selective restore';
-  cb.addEventListener('change', () => toggleTabSelection(w, t, cb.checked));
-  cb.dataset.win = String(w.windowId);
-  cb.dataset.tabkey = `${w.windowId}:${t.index}`;
-
   const fav = document.createElement('span');
   fav.className = 'favicon';
   if (t.favIconUrl) {
@@ -579,89 +542,11 @@ function renderTabRow(w, t) {
   });
   right.append(copyBtn);
 
-  li.append(cb, fav, titleWrap, right);
+  li.append(fav, titleWrap, right);
   return li;
 }
 
-function toggleWindowSelection(w, checked, block) {
-  if (checked) {
-    state.selection.set(w.windowId, { all: true, tabKeys: new Set() });
-    $$('input[type="checkbox"]', block).forEach(cb => {
-      if (cb.dataset.tabkey) cb.checked = true;
-    });
-  } else {
-    state.selection.delete(w.windowId);
-    $$('input[type="checkbox"]', block).forEach(cb => {
-      if (cb.dataset.tabkey) cb.checked = false;
-    });
-  }
-  updateRestoreSelectedDisabled();
-}
-
-function toggleTabSelection(w, t, checked) {
-  let entry = state.selection.get(w.windowId);
-  if (!entry) {
-    entry = { all: false, tabKeys: new Set() };
-    state.selection.set(w.windowId, entry);
-  }
-  const key = `${w.windowId}:${t.index}`;
-  if (checked) entry.tabKeys.add(key);
-  else entry.tabKeys.delete(key);
-  entry.all = false;
-  if (entry.tabKeys.size === 0) state.selection.delete(w.windowId);
-  updateRestoreSelectedDisabled();
-}
-
-function updateRestoreSelectedDisabled() {
-  const btn = $('#btn-restore-selected');
-  if (!btn) return;
-  btn.disabled = state.selection.size === 0;
-  btn.style.opacity = btn.disabled ? '0.5' : '1';
-}
-
-function serializeSelection() {
-  if (state.selection.size === 0) return null;
-  const windowIds = [];
-  const tabKeys = [];
-  for (const [wid, entry] of state.selection) {
-    if (entry.all) windowIds.push(wid);
-    else for (const k of entry.tabKeys) tabKeys.push(k);
-  }
-  return { windowIds, tabKeys };
-}
-
 // ---------- Operations ----------
-
-async function doRestore(mode) {
-  if (!state.current) return;
-  const selection = mode === 'selected' ? serializeSelection() : null;
-  if (mode === 'selected' && (!selection || (selection.windowIds.length === 0 && selection.tabKeys.length === 0))) {
-    toast('No tabs selected.');
-    return;
-  }
-  // Restore is ALWAYS user-triggered AND always confirmed unless the user
-  // explicitly turned the confirmation off in settings.
-  if (state.settings?.confirmRestore !== false) {
-    const willOpen = mode === 'selected'
-      ? (selection.tabKeys.length + selection.windowIds.reduce((s, wid) => {
-          const w = state.current.windows.find(x => x.windowId === wid);
-          return s + (w ? w.tabs.length : 0);
-        }, 0))
-      : state.current.stats.tabCount;
-    const ok = await confirmModal(
-      'Restore?',
-      `This will open ${willOpen} tab${willOpen === 1 ? '' : 's'} from "${state.current.name}". Tab Vault never opens tabs on its own — this is the only place it does. Continue?`,
-      'Restore now'
-    );
-    if (!ok) return;
-  }
-  try {
-    const r = await send({ type: 'restore', id: state.current.id, options: { mode, selection } });
-    toast(`Opened ${r.restored} tabs`);
-  } catch (e) {
-    toast(`Restore failed: ${e.message}`);
-  }
-}
 
 async function renameCurrent() {
   if (!state.current) return;
@@ -897,7 +782,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#max-snapshots').addEventListener('change', async e => { await patchSettings({ maxSnapshots: parseInt(e.target.value, 10) || 0 }); await loadTimeline(); });
   $('#theme').addEventListener('change', e => patchSettings({ theme: e.target.value }));
   $('#live-enabled').addEventListener('change', e => patchSettings({ liveSnapshotEnabled: e.target.checked }));
-  $('#confirm-restore').addEventListener('change', e => patchSettings({ confirmRestore: e.target.checked }));
   const profileInput = $('#profile-label');
   if (profileInput) {
     let labelDebounce;
