@@ -53,6 +53,13 @@ async function loadSettings() {
   $('#live-enabled').checked = !!settings.liveSnapshotEnabled;
   $('#confirm-restore').checked = !!settings.confirmRestore;
   $('#profile-label').value = settings.profileLabel || '';
+  $('#backup-enabled').checked = !!settings.hourlyBackupEnabled;
+  $('#backup-download').checked = !!settings.hourlyBackupDownload;
+  $('#backup-interval').value = String(settings.hourlyBackupIntervalMinutes || 60);
+  $('#backup-webhook').value = settings.hourlyBackupWebhookUrl || '';
+  $('#backup-secret').value = settings.hourlyBackupWebhookSecret || '';
+  const status = $('#backup-status');
+  status.textContent = settings.hourlyBackupLastStatus || (settings.hourlyBackupEnabled ? 'No runs yet.' : '');
   await applyProfileChip();
 }
 
@@ -832,6 +839,15 @@ function confirmModal(title, body, confirmText = 'OK', destructive = false) {
   });
 }
 
+function originPattern(url) {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.hostname}/*`;
+  } catch {
+    return 'https://*/*';
+  }
+}
+
 // ---------- Live storage updates ----------
 
 let _refreshDebounce = null;
@@ -885,6 +901,58 @@ document.addEventListener('DOMContentLoaded', async () => {
       }, 300);
     });
   }
+  // Hourly backup wiring
+  $('#backup-enabled').addEventListener('change', async (e) => {
+    await patchSettings({ hourlyBackupEnabled: e.target.checked });
+    $('#backup-status').textContent = e.target.checked ? 'Enabled. First run will happen within the interval.' : 'Disabled.';
+  });
+  $('#backup-download').addEventListener('change', e => patchSettings({ hourlyBackupDownload: e.target.checked }));
+  $('#backup-interval').addEventListener('change', e => patchSettings({ hourlyBackupIntervalMinutes: parseInt(e.target.value, 10) || 60 }));
+  let webhookDebounce;
+  $('#backup-webhook').addEventListener('input', (e) => {
+    clearTimeout(webhookDebounce);
+    const v = e.target.value.trim();
+    webhookDebounce = setTimeout(async () => {
+      if (v && !/^https:\/\//i.test(v)) {
+        $('#backup-status').textContent = 'Webhook must use HTTPS.';
+        return;
+      }
+      // Request host permission for the webhook (optional permission).
+      if (v) {
+        try {
+          const granted = await new Promise(r => chrome.permissions.request({ origins: [originPattern(v)] }, r));
+          if (!granted) { $('#backup-status').textContent = 'Permission denied — webhook will be saved but cannot fire.'; return; }
+        } catch { /* ignore */ }
+      }
+      await patchSettings({ hourlyBackupWebhookUrl: v });
+      $('#backup-status').textContent = v ? 'Webhook URL saved.' : 'Webhook cleared.';
+    }, 400);
+  });
+  let secretDebounce;
+  $('#backup-secret').addEventListener('input', (e) => {
+    clearTimeout(secretDebounce);
+    const v = e.target.value;
+    secretDebounce = setTimeout(() => patchSettings({ hourlyBackupWebhookSecret: v }), 400);
+  });
+  $('#backup-test').addEventListener('click', async () => {
+    const btn = $('#backup-test');
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Running…';
+    $('#backup-status').textContent = 'Running backup now…';
+    try {
+      const r = await send({ type: 'run-backup-now' });
+      $('#backup-status').textContent = r.summary || 'Done.';
+      toast('Backup run finished');
+    } catch (e) {
+      $('#backup-status').textContent = `Failed: ${e.message}`;
+      toast(`Backup failed: ${e.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
   $('#clear-all').addEventListener('click', clearAll);
 
   $('#search').addEventListener('input', e => { state.query = e.target.value; renderTimeline(); });

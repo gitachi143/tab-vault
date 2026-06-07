@@ -257,6 +257,20 @@ button, select, input { font: inherit; color: inherit; }
   padding: 8px 10px; background: var(--surface-2); border-radius: 8px;
 }
 .restore-note strong { color: var(--fg-2); }
+
+.panel-divider { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+.panel-h3 { margin: 6px 0 4px; font-size: 13px; }
+.panel-help { color: var(--fg-3); font-size: 12px; margin: 2px 0 10px; }
+.panel-help code { background: var(--surface-2); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+.field.full { grid-column: 1 / -1; }
+.field input[type="url"], .field input[type="text"] {
+  padding: 6px 8px; background: var(--surface-2); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  font: inherit; font-size: 12px;
+}
+.field input[type="url"]:focus, .field input[type="text"]:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,70,229,0.15);
+}
 .snap-row.pinned .pin { color: var(--accent); }
 .snap-row .badge.manual  { background: rgba(22,163,74,0.14); color: var(--success); }
 .snap-row .badge.auto    { background: rgba(79,70,229,0.14); color: var(--accent); }

@@ -2,9 +2,13 @@
 
 A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have open over time**, bundles snapshots into sessions like Google Docs version history, and lets you browse, search, and diff the history.
 
-> **Tab Vault never opens tabs on its own.** The only code path that opens a tab or window runs when you click a **Restore** button. Lifecycle events, alarms, tab events, and crash detection only read and write storage.
+> **Tab Vault is a backup, not a replacement for Chrome's session restore.** Chrome's "Continue where you left off" is your primary safety net. Tab Vault is a passive observer that records what's open so you can browse the history and, if you ever need it, restore from any past point. It never closes, opens, modifies, or duplicates a tab on its own.
+
+> **Tab Vault never opens tabs on its own.** The only code path that opens a tab or window runs when you click a **Restore** button. Lifecycle events, alarms, tab events, hourly backups, and crash detection only read and write storage.
 
 > **Multi-profile aware.** Each Chrome / Brave profile keeps its own independent history (enforced by the browser's per-profile storage). Set a label like "Work" or "Personal" in settings and it shows up in the popup header and bakes into export filenames. Importing a backup from another profile triggers a confirmation.
+
+> **Hourly off-device backups** (opt-in): the extension can also bundle your snapshots into a JSON file every hour and either save it to your `Downloads/tab-vault/` folder, POST it to an HTTPS endpoint you control, or both. Use the included Google Apps Script template in `integrations/apps-script-mailer/` to receive these as hourly emails from your own Gmail to your own Gmail — no third-party services.
 
 ## What it does
 
@@ -205,7 +209,24 @@ Top of dashboard → search box, or `Ctrl/Cmd + /` to focus it. Searches snapsho
 | **Profile label** | Name this Chrome profile so the popup chip and export filename are recognisable. |
 | **Crash-recovery live snapshot** | Keep updating the read-only crash snapshot. Recommended on. |
 | **Always confirm before restore** | Show a confirmation modal before opening tabs. Strongly recommended on. |
+| **Run hourly backup** | Bundle all snapshots into JSON every hour (see below). Off by default. |
+| **Save to Downloads/tab-vault/** | Hourly backup file lands in your local Downloads folder. |
+| **Backup interval (minutes)** | 30 min … 24 hours. Defaults to 60 min. |
+| **Webhook URL (HTTPS)** | Hourly backup is also POSTed to this URL (e.g. an Apps Script email forwarder). |
+| **Optional shared secret** | Sent in the POST body; your webhook can verify it before processing. |
+| **Run backup now** | Triggers a backup immediately to verify both channels work. |
 | **Delete all snapshots…** | Nuclear option. Tap if you want a clean slate. |
+
+### Get hourly emails of your backup (3-minute setup)
+
+You don't need a server or a paid service — your own Google account is enough.
+
+1. Open [`integrations/apps-script-mailer/README.md`](./integrations/apps-script-mailer/README.md) and follow the 5-step setup. It deploys a Google Apps Script web app that runs as you, receives the backup POST, and emails the JSON to your own Gmail address.
+2. Paste the resulting Web app URL into Tab Vault → **⚙** → **Webhook URL**.
+3. Tick **Run hourly backup**.
+4. Click **Run backup now** to test — you should receive an email within ~20 seconds with the full backup attached.
+
+Why this approach: browser extensions can't send email directly (there is no email API). They can only POST to HTTPS endpoints. The Apps Script template is the simplest endpoint that turns a POST into an email — it runs on Google's infrastructure under your own account, signs in as you, sends from your own Gmail to your own Gmail, costs nothing, and requires no third-party services or API keys.
 
 ### Keyboard shortcuts
 
@@ -279,6 +300,7 @@ Click any snapshot to see:
 
 | Risk | Mitigation |
 |---|---|
+| Tab Vault interfering with Chrome's session restore | Tab Vault never calls `chrome.tabs.create/update/remove/move` or `chrome.windows.create/remove` outside the explicit user-clicked restore path. Tested by 32 invariant tests covering install, startup, alarms, tab/window/group events, hourly backup firings, and keyboard shortcuts. |
 | Two snapshot writes racing (alarm + manual click) | Promise-chain mutex serializes every index-touching operation in `lib/storage.js` |
 | Storage quota exceeded | `safeSet()` catches `QUOTA*` errors, prunes oldest unpinned snapshot, retries once; pinned never touched |
 | Index points at a deleted key | `repairIndex()` runs on every service worker startup |
@@ -346,13 +368,13 @@ chromeextension/
 └── tests/                     # 173 tests covering libs, background, no-auto-open
 ```
 
-## Tests (235 total)
+## Tests (254 total)
 
 ```
 node tests/test.mjs               # 89 lib + integration tests
 node tests/test_background.mjs    # 39 background message-handler tests
 node tests/test_sessions.mjs      # 32 session bundling + diff tests
-node tests/test_no_autoopen.mjs   # 13 invariant tests: nothing auto-opens tabs
+node tests/test_no_autoopen.mjs   # 32 invariant tests: nothing auto-opens/closes tabs
 node tests/test_storage_safety.mjs # 39 mutex / quota / repair / validation tests
 node tests/test_profile.mjs       # 23 multi-profile + import validation tests
 ```

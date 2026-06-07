@@ -22,20 +22,38 @@ import {
 import { restoreSnapshot } from './lib/restore.js';
 import { bundleIntoSessions, groupByDay, computeDiff, summarizeDiff } from './lib/sessions.js';
 import { validateImportPayload, ValidationError } from './lib/validate.js';
+import { buildBackupPayload, downloadBackup, postToWebhook } from './lib/backup.js';
 import { uuid, debounce, formatDateFile } from './lib/utils.js';
 
 // =====================================================================
-// HARD INVARIANT: Tab Vault never opens tabs or windows automatically.
-// chrome.tabs.create and chrome.windows.create are reachable from exactly
-// one code path: the `restore` / `restore-latest` message, which is only
-// sent by an explicit user click in the popup or dashboard. Everything
-// else (alarms, tab events, startup, crash detection) only READS and
-// WRITES storage. Do not add automatic-restore behaviour without
-// removing this comment.
+// HARD INVARIANTS — DO NOT VIOLATE WITHOUT REMOVING THIS COMMENT
+//
+// 1. Tab Vault never opens tabs or windows automatically.
+//    chrome.tabs.create and chrome.windows.create are reachable from exactly
+//    one code path: the `restore` / `restore-latest` message, which is only
+//    sent by an explicit user click in the popup or dashboard.
+//
+// 2. Tab Vault never closes, replaces, navigates, focuses, moves, or
+//    otherwise mutates a user's tabs. The only call sites of
+//    chrome.tabs.update, chrome.tabs.remove, chrome.windows.remove,
+//    chrome.tabs.move are inside lib/restore.js — itself only reachable
+//    from #1.
+//
+// 3. Chrome's native "Continue where you left off" session restore is
+//    independent of Tab Vault. Tab Vault is a passive observer at startup:
+//    it captures whatever tabs Chrome has already restored and writes them
+//    to storage. It does not delay, block, interfere, or duplicate that
+//    process. If Chrome restores your tabs on launch, you get those tabs.
+//    Tab Vault's own restore is a manual backup option, not a replacement.
+//
+// All "alarms, tab events, startup, crash detection" code paths only READ
+// from the browser and WRITE to chrome.storage.local. They never call any
+// mutating Chrome API.
 // =====================================================================
 
 const ALARM_AUTO = 'tv-auto-snapshot';
 const ALARM_LIVE_HEARTBEAT = 'tv-live-heartbeat';
+const ALARM_HOURLY_BACKUP = 'tv-hourly-backup';
 
 // --------------------------------------------------------------------------
 // Init gate — every message handler awaits this so we never operate on
@@ -109,6 +127,7 @@ async function rescheduleAlarms() {
   const s = await getSettings();
   await chrome.alarms.clear(ALARM_AUTO);
   await chrome.alarms.clear(ALARM_LIVE_HEARTBEAT);
+  await chrome.alarms.clear(ALARM_HOURLY_BACKUP);
   if (s.autoSnapshotMinutes && s.autoSnapshotMinutes > 0) {
     chrome.alarms.create(ALARM_AUTO, {
       delayInMinutes: s.autoSnapshotMinutes,
@@ -118,6 +137,10 @@ async function rescheduleAlarms() {
   if (s.liveSnapshotEnabled) {
     chrome.alarms.create(ALARM_LIVE_HEARTBEAT, { delayInMinutes: 1, periodInMinutes: 1 });
   }
+  if (s.hourlyBackupEnabled) {
+    const period = Math.max(1, s.hourlyBackupIntervalMinutes | 0 || 60);
+    chrome.alarms.create(ALARM_HOURLY_BACKUP, { delayInMinutes: period, periodInMinutes: period });
+  }
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -126,8 +149,42 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     try { await captureAndPersist({ type: 'auto' }); } catch (e) { console.warn('auto snapshot failed', e); }
   } else if (alarm.name === ALARM_LIVE_HEARTBEAT) {
     await writeLiveNow();
+  } else if (alarm.name === ALARM_HOURLY_BACKUP) {
+    try { await runHourlyBackup('hourly'); } catch (e) { console.warn('hourly backup failed', e); }
   }
 });
+
+// ---------- Hourly backup driver ----------
+
+async function runHourlyBackup(reason) {
+  const s = await getSettings();
+  if (!s.hourlyBackupEnabled) return { skipped: true, reason: 'disabled' };
+  const payload = await buildBackupPayload({ reason });
+  const results = { downloaded: null, posted: null };
+  // Independent channels — one can fail without sinking the other.
+  if (s.hourlyBackupDownload) {
+    try { results.downloaded = await downloadBackup(payload); }
+    catch (e) { results.downloaded = { ok: false, error: String(e?.message || e) }; }
+  }
+  if (s.hourlyBackupWebhookUrl) {
+    try {
+      results.posted = await postToWebhook(s.hourlyBackupWebhookUrl, payload, {
+        secret: s.hourlyBackupWebhookSecret || ''
+      });
+    } catch (e) {
+      results.posted = { ok: false, error: String(e?.message || e) };
+    }
+  }
+  const statusLines = [];
+  if (results.downloaded) statusLines.push(`download: ${results.downloaded.ok ? 'ok' : 'fail (' + (results.downloaded.error || '') + ')'}`);
+  if (results.posted) statusLines.push(`webhook: ${results.posted.ok ? 'ok' : 'fail (' + (results.posted.error || results.posted.status) + ')'}`);
+  const summary = statusLines.length ? statusLines.join(' · ') : 'no channels configured';
+  await setSettings({
+    hourlyBackupLastStatus: `${new Date().toLocaleString()} — ${summary}`,
+    hourlyBackupLastRunAt: Date.now()
+  });
+  return { ok: true, results, summary };
+}
 
 // ---------- Live snapshot (crash recovery) ----------
 
@@ -345,6 +402,10 @@ async function handleMessage(msg) {
     case 'recompute-alarms':
       await rescheduleAlarms();
       return { ok: true };
+    case 'run-backup-now': {
+      const result = await runHourlyBackup('manual');
+      return result;
+    }
     default:
       throw new Error(`Unknown message: ${msg?.type}`);
   }

@@ -17,8 +17,11 @@ console.warn = () => {};
 
 let tabCreates = 0;
 let windowCreates = 0;
+let tabUpdates = 0;
+let tabRemoves = 0;
+let windowRemoves = 0;
 
-// Wrap the mock to count creates.
+// Wrap the mock to count every potentially-disruptive call.
 const realTabsCreate = harness.chromeApi.tabs.create;
 harness.chromeApi.tabs.create = function (...args) {
   tabCreates += 1;
@@ -29,6 +32,23 @@ harness.chromeApi.windows.create = function (...args) {
   windowCreates += 1;
   return realWindowsCreate.apply(this, args);
 };
+const realTabsUpdate = harness.chromeApi.tabs.update;
+harness.chromeApi.tabs.update = function (...args) {
+  tabUpdates += 1;
+  return realTabsUpdate.apply(this, args);
+};
+// tabs.remove + windows.remove aren't defined on our mock yet — add no-ops
+// so the counters don't blow up when restore wires close-old logic.
+harness.chromeApi.tabs.remove = async function () { tabRemoves += 1; };
+const realWindowsRemove = harness.chromeApi.windows.remove;
+harness.chromeApi.windows.remove = function (...args) {
+  windowRemoves += 1;
+  return realWindowsRemove.apply(this, args);
+};
+
+function resetCounters() {
+  tabCreates = 0; windowCreates = 0; tabUpdates = 0; tabRemoves = 0; windowRemoves = 0;
+}
 
 const { seedWindow, reset, state } = harness;
 
@@ -54,7 +74,7 @@ async function grp(name, fn) { console.log('\n▸', name); await fn(); }
 // --------------------------------------------------------------------------
 await grp('non-restore message paths do not open tabs', async () => {
   reset();
-  tabCreates = 0; windowCreates = 0;
+  resetCounters();
   seedWindow({ tabs: [{ url: 'https://a.com/' }, { url: 'https://b.com/' }] });
 
   // Try every non-restore message.
@@ -83,7 +103,7 @@ await grp('non-restore message paths do not open tabs', async () => {
 // --------------------------------------------------------------------------
 await grp('lifecycle events (install, startup) do not open tabs', async () => {
   reset();
-  tabCreates = 0; windowCreates = 0;
+  resetCounters();
   seedWindow({ tabs: [{ url: 'https://a.com/' }, { url: 'https://b.com/' }] });
 
   // Prime a "crashed" live snapshot so onStartup will promote it.
@@ -114,7 +134,7 @@ await grp('lifecycle events (install, startup) do not open tabs', async () => {
 // --------------------------------------------------------------------------
 await grp('tab/window/group events do not open tabs', async () => {
   reset();
-  tabCreates = 0; windowCreates = 0;
+  resetCounters();
   seedWindow({ tabs: [{ url: 'https://a.com/' }] });
 
   // Fire every event our listeners hook
@@ -142,7 +162,7 @@ await grp('tab/window/group events do not open tabs', async () => {
 // --------------------------------------------------------------------------
 await grp('alarms (auto-snapshot, heartbeat) do not open tabs', async () => {
   reset();
-  tabCreates = 0; windowCreates = 0;
+  resetCounters();
   seedWindow({ tabs: [{ url: 'https://a.com/' }] });
   await sendMessage({ type: 'set-settings', patch: { autoSnapshotMinutes: 5, liveSnapshotEnabled: true } });
 
@@ -157,7 +177,7 @@ await grp('alarms (auto-snapshot, heartbeat) do not open tabs', async () => {
 // --------------------------------------------------------------------------
 await grp('commands (Cmd+Shift+S, Cmd+Shift+E) do not open tabs', async () => {
   reset();
-  tabCreates = 0; windowCreates = 0;
+  resetCounters();
   seedWindow({ tabs: [{ url: 'https://a.com/' }] });
 
   harness.chromeApi.commands.onCommand.emit('save-snapshot');
@@ -171,7 +191,7 @@ await grp('commands (Cmd+Shift+S, Cmd+Shift+E) do not open tabs', async () => {
 // --------------------------------------------------------------------------
 await grp('only "restore" and "restore-latest" messages open tabs', async () => {
   reset();
-  tabCreates = 0; windowCreates = 0;
+  resetCounters();
   seedWindow({ tabs: [{ url: 'https://a.com/' }, { url: 'https://b.com/' }] });
   const { snapshot } = await sendMessage({ type: 'capture' });
 
@@ -191,6 +211,89 @@ await grp('only "restore" and "restore-latest" messages open tabs', async () => 
   await new Promise(r => setTimeout(r, 50));
   const after = tabCreates + windowCreates;
   eq(after, before, 'no additional opens after restore completed');
+});
+
+// --------------------------------------------------------------------------
+await grp('Chrome session restore is NOT interfered with', async () => {
+  // Simulate the user's normal startup pattern:
+  //   1. Chrome restores tabs from previous session (other apps do this — we don't)
+  //   2. Tab Vault's onStartup fires, captures whatever Chrome restored
+  //   3. Tab Vault must NOT close, modify, or duplicate any of those tabs
+  reset();
+  resetCounters();
+
+  // Pre-seed: pretend Chrome already restored some tabs before our handler runs
+  seedWindow({ tabs: [
+    { url: 'https://restored-by-chrome.com/1' },
+    { url: 'https://restored-by-chrome.com/2' },
+    { url: 'https://restored-by-chrome.com/3' }
+  ], focused: true });
+  const seededTabIds = new Set(
+    [...state.windows.values()].flatMap(w => w.tabs.map(t => t.id))
+  );
+
+  // Now fire Tab Vault's onStartup — it should ONLY observe, not mutate.
+  harness.chromeApi.runtime.onStartup.emit();
+  await new Promise(r => setTimeout(r, 50));
+
+  // Counters must be zero
+  eq(tabCreates, 0, 'onStartup creates no tabs');
+  eq(windowCreates, 0, 'onStartup creates no windows');
+  eq(tabUpdates, 0, 'onStartup does not modify any existing tab');
+  eq(tabRemoves, 0, 'onStartup closes no tabs');
+  eq(windowRemoves, 0, 'onStartup closes no windows');
+
+  // The tabs Chrome restored are still there, unchanged
+  const tabsNow = [...state.windows.values()].flatMap(w => w.tabs);
+  eq(tabsNow.length, 3, 'all 3 Chrome-restored tabs still present');
+  const idsNow = new Set(tabsNow.map(t => t.id));
+  for (const id of seededTabIds) assert(idsNow.has(id), `tab ${id} still present`);
+});
+
+await grp('Chrome session restore: still un-interfered after auto-snapshot fires', async () => {
+  reset();
+  resetCounters();
+  seedWindow({ tabs: [
+    { url: 'https://chrome-restored.com/a' },
+    { url: 'https://chrome-restored.com/b' }
+  ] });
+  await sendMessage({ type: 'set-settings', patch: { autoSnapshotMinutes: 5, liveSnapshotEnabled: true } });
+
+  // Multiple cycles of "tab event → auto snapshot → heartbeat"
+  for (let i = 0; i < 3; i++) {
+    harness.chromeApi.tabs.onCreated.emit({ id: 999 + i, url: 'https://added.com/' + i });
+    harness.chromeApi.tabs.onUpdated.emit(999 + i, {}, {});
+    harness.chromeApi.alarms._fire('tv-auto-snapshot');
+    harness.chromeApi.alarms._fire('tv-live-heartbeat');
+  }
+  await new Promise(r => setTimeout(r, 50));
+
+  eq(tabCreates, 0, 'auto-snapshot cycles never create tabs');
+  eq(windowCreates, 0, 'never create windows');
+  eq(tabUpdates, 0, 'never update existing tabs');
+  eq(tabRemoves, 0, 'never close tabs');
+  eq(windowRemoves, 0, 'never close windows');
+});
+
+await grp('hourly backup alarm does not open or modify tabs', async () => {
+  reset();
+  resetCounters();
+  seedWindow({ tabs: [{ url: 'https://x.com/' }] });
+  // Even with full hourly backup enabled, no tab/window mutation
+  await sendMessage({ type: 'set-settings', patch: {
+    hourlyBackupEnabled: true,
+    hourlyBackupDownload: true,
+    hourlyBackupWebhookUrl: ''
+  } });
+  // Fire the hourly backup alarm
+  harness.chromeApi.alarms._fire('tv-hourly-backup');
+  await new Promise(r => setTimeout(r, 80));
+
+  eq(tabCreates, 0, 'hourly backup creates no tabs');
+  eq(windowCreates, 0, 'hourly backup creates no windows');
+  eq(tabUpdates, 0, 'hourly backup updates no tabs');
+  eq(tabRemoves, 0, 'hourly backup closes no tabs');
+  eq(windowRemoves, 0, 'hourly backup closes no windows');
 });
 
 // --------------------------------------------------------------------------

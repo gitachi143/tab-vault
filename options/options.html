@@ -88,10 +88,50 @@
         <button id="clear-all" class="danger">Delete all snapshots…</button>
       </div>
     </div>
-    <p class="restore-note">
-      Tab Vault never opens tabs on its own. Restoration only happens when you
-      click a <strong>Restore</strong> button below.
+
+    <hr class="panel-divider" />
+
+    <h3 class="panel-h3">Hourly backup (off-device)</h3>
+    <p class="panel-help">
+      Tab Vault is a backup for Chrome's built-in session restore — never a replacement.
+      The hourly backup is an extra safety net: it bundles all your snapshots into a JSON file
+      and either downloads it to your <code>Downloads/tab-vault/</code> folder, posts it to an
+      HTTPS endpoint you control, or both. Email forwarding goes through that endpoint — see
+      <code>integrations/apps-script-mailer/</code> for a 3-click Google Apps Script template.
     </p>
+    <div class="panel-grid">
+      <label class="field-row">
+        <input type="checkbox" id="backup-enabled" />
+        <span>Run hourly backup</span>
+      </label>
+      <label class="field-row">
+        <input type="checkbox" id="backup-download" />
+        <span>Save to Downloads/tab-vault/ folder</span>
+      </label>
+      <label class="field">
+        <span>Backup interval (minutes)</span>
+        <select id="backup-interval">
+          <option value="30">Every 30 minutes</option>
+          <option value="60">Every hour</option>
+          <option value="120">Every 2 hours</option>
+          <option value="360">Every 6 hours</option>
+          <option value="720">Every 12 hours</option>
+          <option value="1440">Once a day</option>
+        </select>
+      </label>
+      <label class="field full">
+        <span>Webhook URL (HTTPS) — leave empty to disable</span>
+        <input type="url" id="backup-webhook" placeholder="https://script.google.com/.../exec" />
+      </label>
+      <label class="field full">
+        <span>Optional shared secret (sent in POST body for the webhook to verify)</span>
+        <input type="text" id="backup-secret" placeholder="(empty = no secret)" />
+      </label>
+      <div class="field-row">
+        <button id="backup-test" class="secondary">Run backup now</button>
+        <span class="muted" id="backup-status" style="font-size:11px"></span>
+      </div>
+    </div>
   </section>
 
   <section class="toolbar">
