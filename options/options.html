@@ -91,32 +91,35 @@
 
     <hr class="panel-divider" />
 
-    <h3 class="panel-h3">Hourly backup (off-device)</h3>
+    <h3 class="panel-h3">Scheduled backup (off-device)</h3>
     <p class="panel-help">
       Tab Vault is a backup for Chrome's built-in session restore — never a replacement.
-      The hourly backup is an extra safety net: it bundles all your snapshots into a JSON file
-      and either downloads it to your <code>Downloads/tab-vault/</code> folder, posts it to an
-      HTTPS endpoint you control, or both. Email forwarding goes through that endpoint — see
+      The scheduled backup is an extra safety net: it bundles all your snapshots into a JSON file
+      on a fixed interval (default: once a day) and either downloads it to your
+      <code>Downloads/tab-vault/</code> folder, posts it to an HTTPS endpoint you control, or both.
+      Email forwarding goes through that endpoint — see
       <code>integrations/apps-script-mailer/</code> for a 3-click Google Apps Script template.
     </p>
     <div class="panel-grid">
       <label class="field-row">
         <input type="checkbox" id="backup-enabled" />
-        <span>Run hourly backup</span>
+        <span>Run scheduled backup</span>
       </label>
       <label class="field-row">
         <input type="checkbox" id="backup-download" />
         <span>Save to Downloads/tab-vault/ folder</span>
       </label>
       <label class="field">
-        <span>Backup interval (minutes)</span>
+        <span>Backup interval</span>
         <select id="backup-interval">
           <option value="30">Every 30 minutes</option>
           <option value="60">Every hour</option>
           <option value="120">Every 2 hours</option>
           <option value="360">Every 6 hours</option>
           <option value="720">Every 12 hours</option>
-          <option value="1440">Once a day</option>
+          <option value="1440">Once a day (default)</option>
+          <option value="2880">Every 2 days</option>
+          <option value="10080">Once a week</option>
         </select>
       </label>
       <label class="field full">
