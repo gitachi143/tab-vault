@@ -24,14 +24,216 @@ A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have
   - `Ctrl/Cmd + Shift + E` — open the history dashboard
   - Inside the dashboard: `Ctrl/Cmd + S` save · `Ctrl/Cmd + /` focus search.
 
-## Install (Chrome or Brave)
+## Install from GitHub (Chrome or Brave)
 
-1. Open `chrome://extensions` (Chrome) or `brave://extensions` (Brave).
-2. Toggle **Developer mode** on.
-3. Click **Load unpacked** and select this folder.
-4. Pin the Tab Vault icon in your toolbar.
+You don't need Node or npm — Tab Vault has zero runtime dependencies. The only thing you do is download the folder and load it as an unpacked extension.
 
-That's it — Chrome and Brave are both Chromium with full MV3 + tabGroups support.
+### Step 1 — get the code onto your laptop
+
+Pick whichever you prefer:
+
+**Option A: `git clone` (recommended — easy to update later)**
+```bash
+cd ~                                     # or wherever you want it
+git clone https://github.com/gitachi143/tab-vault.git
+```
+You now have `~/tab-vault/`.
+
+**Option B: download a ZIP**
+1. Go to https://github.com/gitachi143/tab-vault
+2. Click the green **Code** button → **Download ZIP**
+3. Unzip it somewhere stable (Documents, Desktop, anywhere you won't move it from).
+   - If you move or delete the folder later, Chrome/Brave will disable the extension because it can no longer find the files. Pick a permanent spot.
+
+### Step 2 — load it as an unpacked extension
+
+| Browser | Address bar URL |
+|---|---|
+| Chrome | `chrome://extensions` |
+| Brave | `brave://extensions` |
+| Edge | `edge://extensions` |
+
+1. Open that URL.
+2. Top-right corner: toggle **Developer mode** ON.
+3. Top-left: click **Load unpacked**.
+4. In the file picker, select the `tab-vault` folder (the one that directly contains `manifest.json`).
+5. The "Tab Vault" card appears. Make sure its toggle is **on**.
+6. Click the **puzzle-piece** icon in the browser toolbar → find Tab Vault → click the **pin** icon so it stays visible.
+
+### Step 3 — verify it's working
+
+- Click the Tab Vault icon. You should see stats (your current tabs/windows/groups), a **Save snapshot** button, and a profile chip showing a short id (e.g. `a3b8c1d2`).
+- Click **Save snapshot** — a toast should say *"Saved N tabs"*.
+- Click **View history →** — the dashboard opens in a new tab with your snapshot on the timeline.
+
+If anything's red on the extension card, click **Errors** and paste the message — it's almost always a manifest path issue from moving the folder.
+
+### Updating later
+
+```bash
+cd ~/tab-vault          # or wherever you cloned it
+git pull
+```
+Then back in `chrome://extensions`, click the **refresh icon** on the Tab Vault card. Your existing snapshots are kept.
+
+### Use across multiple Chrome profiles
+
+Each Chrome / Brave profile runs its own independent copy of the extension's storage. To install for a second profile:
+
+1. Switch to the other profile (top-right avatar menu).
+2. Repeat Step 2 above — open `chrome://extensions` *in that profile*, Developer mode on, Load unpacked, select the same folder.
+3. Open the Tab Vault dashboard in each profile and set a **Profile label** ("Work", "Personal", etc.) so you can tell them apart at a glance.
+
+Each profile's snapshots are stored separately and never bleed across. Exports are tagged with the profile id and label so backups don't get confused.
+
+---
+
+## How everything works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Tab Vault                                │
+│                                                                  │
+│  Periodic + manual snapshots ──► chrome.storage.local            │
+│       (every 10 min default)            │                        │
+│                                         │                        │
+│       Tab events ──► live snapshot ◄────┘                        │
+│       (debounced 4s)    (read-only, never auto-restored)         │
+│                                                                  │
+│  YOU click Restore ◄── popup OR dashboard ──► open new windows   │
+│                       (this is the ONLY way tabs are opened)     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Two surfaces
+
+- **Popup** (toolbar icon) — quick view: current stats, save button, last few snapshots, "View history" link, and a small footer link to restore the most recent snapshot.
+- **Dashboard** (the options page, opens in its own tab) — full timeline of snapshots grouped by day → session → snapshot, with diff between consecutive snapshots, search, settings, import/export, and explicit restore controls.
+
+### What a snapshot contains
+
+Every snapshot captures, for every non-incognito Chrome / Brave window:
+- All tabs: URL, title, favicon URL, pinned state, active state, index, group membership.
+- All tab groups: title, color, collapsed state.
+- Window state: maximized / normal / minimized, position, size, focused.
+
+### When snapshots are taken
+
+| Trigger | Type label | Frequency |
+|---|---|---|
+| You click **Save snapshot** | `manual` | on demand |
+| Auto-snapshot alarm | `auto` | every 10 min (configurable) |
+| Browser start | `startup` | once on browser launch |
+| Service-worker live heartbeat | `live` (read-only) | every 1 min, updated also on tab events |
+| Detected crash on next launch | `crash` | once, when previous-session live snapshot survives |
+| Before any restore | `pre-restore` | one safety snapshot, so you can always undo |
+
+### Storage layout
+
+Everything is in `chrome.storage.local` (per-profile, isolated by Chrome itself):
+- `snap:index` — a lightweight array of `{id, name, type, timestamp, stats, pinned}` for fast UI rendering.
+- `snap:<uuid>` — each snapshot's full payload under its own key, so the dashboard loads only what it shows.
+- `tv:settings` — your settings (auto interval, profile label, theme, etc.).
+- `tv:profileId` — your stable per-profile UUID.
+- `tv:live` + `tv:live_meta` — the rolling crash-recovery snapshot.
+- `tv:session` — the current browser-session id.
+
+### What is *guaranteed* never to happen
+
+- **Tab Vault never opens a tab or window unless you click Restore.** Tested by 13 invariant tests that fire every other code path.
+- **Profiles never see each other's history.** Chrome's per-profile storage isolates them; we add a profile UUID on top so cross-profile imports are flagged.
+- **No network traffic.** Zero. No analytics, no sync server, no telemetry.
+- **Incognito windows are never recorded.**
+
+---
+
+## How to use it
+
+### Save a snapshot
+
+- **One-time:** click the Tab Vault icon → **Save snapshot**.
+- **Keyboard:** `Ctrl/Cmd + Shift + S` from anywhere.
+- **Automatic:** turned on by default — every 10 minutes. Change in dashboard settings (⚙).
+
+### Browse your history
+
+- Click the Tab Vault icon → **View history →** (or `Ctrl/Cmd + Shift + E`).
+- The dashboard opens. Left column is a timeline:
+  - **Day headers**: Today, Yesterday, weekday names, then dated.
+  - **Sessions**: contiguous snapshots within 60 min of each other (configurable). Each session shows its time range, snapshot count, and peak tab count.
+  - **Snapshots**: name, timestamp, tab/window/group counts, and a diff badge like `+3` or `−2` showing change vs. the previous snapshot in that session.
+- Click any snapshot. The right pane shows:
+  - **Changes since previous snapshot** — two columns ("Opened" / "Closed") listing the URLs that came and went.
+  - **Windows and tab groups** — exactly as they were at that moment, with favicons, pinned markers, group colors.
+
+### Restore (the only thing that opens tabs)
+
+Three places, all explicit:
+
+1. **Popup → "Restore last stored session"** (footer). Confirms first, then opens the most recent snapshot in new windows.
+2. **Dashboard → click a snapshot → "Restore this snapshot…"**. Confirms first, then opens that snapshot in new windows. Also auto-saves a `pre-restore` snapshot so you can undo by restoring that one.
+3. **Dashboard → "More restore modes ▾"** offers three layouts:
+   - **New windows** — one new window per saved window (recreates layout exactly).
+   - **Single window** — combine everything into one new window.
+   - **Append to current window** — add the saved tabs alongside whatever you have open.
+4. **Dashboard → check the box next to specific windows or tabs → "Restore selected…"** — opens only what you picked.
+
+Every restore is confirmed by default. Toggle off in settings if you don't want the prompt.
+
+### Pin snapshots you care about
+
+In the dashboard detail pane, click **Pin**. Pinned snapshots survive retention pruning forever (the 200-snapshot cap only applies to unpinned ones).
+
+### Search
+
+Top of dashboard → search box, or `Ctrl/Cmd + /` to focus it. Searches snapshot names and types right now.
+
+### Back up off-device
+
+- Dashboard header → **Export** — downloads `tab-vault-<label>-YYYYMMDD-HHMMSS.json` containing every snapshot.
+- Dashboard header → **Import** — accepts that file back. Choose **Merge** to add alongside your current history, or **Replace everything** to wipe and reload.
+- A backup from another profile triggers a confirmation before importing.
+
+### Settings (⚙ in the dashboard header)
+
+| Setting | What it does |
+|---|---|
+| **Auto-snapshot every** | How often a background snapshot is taken. Disable for manual-only. |
+| **New session after gap of** | Pause longer than this and the next snapshot starts a new session bundle. |
+| **Keep at most** | Retention cap (pinned always kept regardless). |
+| **Theme** | Light / Dark / Auto (follow system). |
+| **Profile label** | Name this Chrome profile so the popup chip and export filename are recognisable. |
+| **Crash-recovery live snapshot** | Keep updating the read-only crash snapshot. Recommended on. |
+| **Always confirm before restore** | Show a confirmation modal before opening tabs. Strongly recommended on. |
+| **Delete all snapshots…** | Nuclear option. Tap if you want a clean slate. |
+
+### Keyboard shortcuts
+
+- **Global** (work anywhere in the browser):
+  - `Ctrl/Cmd + Shift + S` — save snapshot
+  - `Ctrl/Cmd + Shift + E` — open dashboard
+- **Inside the dashboard:**
+  - `Ctrl/Cmd + S` — save snapshot
+  - `Ctrl/Cmd + /` — focus search
+
+Change shortcuts in `chrome://extensions/shortcuts`.
+
+### Uninstalling / removing
+
+`chrome://extensions` → Tab Vault → **Remove**. This wipes the extension's `chrome.storage.local`. If you want to keep your history, **export to JSON first**.
+
+To temporarily disable without losing data, use the toggle on the extension card.
+
+---
+
+## Troubleshooting
+
+- **"This extension may have been corrupted" / red Errors button** — usually means the folder was moved after loading. Click Remove, re-run **Load unpacked**, pick the new location.
+- **Snapshots not auto-saving** — open the dashboard → ⚙ → confirm **Auto-snapshot every** is set to something > 0. Chrome's alarms minimum is 1 minute.
+- **Tab favicons missing on restore** — favicons are stored as URLs; if the server is unreachable when the tab opens, the browser falls back to default.
+- **`chrome://newtab` opened instead of the saved URL** — special pages like `chrome://newtab`, `chrome-search://`, and `edge://newtab` cannot be programmatically opened by extensions. We route them to the new-tab page.
+- **Snapshot disappeared after pruning** — bump **Keep at most** in settings, or pin (★) the ones you want forever.
+- **Two profiles showing the same data** — they shouldn't, ever. Each Chrome profile has separate storage. If you see this, the most likely cause is that you're actually in the same profile in two windows. Check the profile chip in the popup header.
 
 ## Mental model
 
