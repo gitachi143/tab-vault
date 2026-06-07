@@ -52,6 +52,25 @@ async function loadSettings() {
   $('#theme').value = settings.theme;
   $('#live-enabled').checked = !!settings.liveSnapshotEnabled;
   $('#confirm-restore').checked = !!settings.confirmRestore;
+  $('#profile-label').value = settings.profileLabel || '';
+  await applyProfileChip();
+}
+
+async function applyProfileChip() {
+  try {
+    const p = await send({ type: 'get-profile' });
+    state.profile = p;
+    const chip = $('#profile-chip');
+    if (p.profileLabel) {
+      chip.textContent = p.profileLabel;
+      chip.classList.remove('unlabeled');
+      chip.title = `Profile: ${p.profileLabel} (id ${p.shortId}). Each Chrome profile keeps its own history.`;
+    } else {
+      chip.textContent = p.shortId;
+      chip.classList.add('unlabeled');
+      chip.title = `Unnamed profile (id ${p.shortId}). Set a label below to make it easier to recognise.`;
+    }
+  } catch { /* ignore */ }
 }
 
 async function patchSettings(patch) {
@@ -194,7 +213,18 @@ async function selectSnapshot(id) {
   state.selection = new Map();
   $$('.snap-row').forEach(el => el.classList.toggle('active', el.dataset.id === id));
 
-  const { snapshot } = await send({ type: 'get-snapshot', id });
+  let snapshot = null;
+  try {
+    const resp = await send({ type: 'get-snapshot', id });
+    snapshot = resp.snapshot;
+  } catch { /* fall through to missing state */ }
+
+  if (!snapshot) {
+    state.current = null;
+    state.currentDiff = null;
+    renderMissingDetail();
+    return;
+  }
   state.current = snapshot;
 
   // Compute diff vs previous in session, if any.
@@ -216,6 +246,14 @@ async function selectSnapshot(id) {
     state.currentDiff = null;
   }
   renderDetail();
+}
+
+function renderMissingDetail() {
+  const empty = $('#detail-empty');
+  const detail = $('#detail');
+  detail.hidden = true;
+  empty.hidden = false;
+  empty.innerHTML = '<p>This snapshot is no longer available.</p><p class="muted">It may have been pruned by retention or deleted in another window. Pick a different one from the timeline.</p>';
 }
 
 function findSessionForId(id) {
@@ -680,8 +718,27 @@ async function importFile(file) {
   const text = await file.text();
   let payload;
   try { payload = JSON.parse(text); } catch { return toast('Invalid JSON file.'); }
+
+  // Strict validation first via the background — gives a precise error if any.
+  let info;
+  try { info = await send({ type: 'inspect-import', payload }); }
+  catch (e) { return toast(`Import failed: ${e.message}`); }
+  if (!info.ok) return toast(`Invalid file: ${info.validationError}`);
+
+  // Cross-profile warning: if the file came from a different profile, ask.
+  if (info.fromProfileId && !info.isSameProfile) {
+    const fromLabel = info.fromProfileLabel || info.fromProfileId.slice(0, 8);
+    const intoLabel = info.currentProfileLabel || (state.profile?.shortId ?? 'this profile');
+    const ok = await confirmModal(
+      'Backup is from a different profile',
+      `This file was exported by profile "${fromLabel}". You are currently in "${intoLabel}". Import it into the current profile?`,
+      'Import here'
+    );
+    if (!ok) return;
+  }
+
   let merge = true;
-  if (payload?.kind === 'tab-vault-export') {
+  if (info.kind === 'export') {
     const choice = await showChoiceModal('Import', [
       { label: 'Merge with existing', value: 'merge', desc: 'Add imported snapshots alongside your current history.' },
       { label: 'Replace everything', value: 'replace', desc: 'Delete all existing snapshots, then import. Destructive!' }
@@ -775,6 +832,23 @@ function confirmModal(title, body, confirmText = 'OK', destructive = false) {
   });
 }
 
+// ---------- Live storage updates ----------
+
+let _refreshDebounce = null;
+function setupStorageListener() {
+  if (!chrome.storage?.onChanged) return;
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    // Only refresh on changes that affect the timeline.
+    const watched = ['snap:index', 'tv:settings'];
+    if (!watched.some(k => k in changes)) return;
+    clearTimeout(_refreshDebounce);
+    _refreshDebounce = setTimeout(async () => {
+      try { await loadTimeline(); } catch {}
+    }, 250);
+  });
+}
+
 // ---------- Wiring ----------
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -799,9 +873,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#theme').addEventListener('change', e => patchSettings({ theme: e.target.value }));
   $('#live-enabled').addEventListener('change', e => patchSettings({ liveSnapshotEnabled: e.target.checked }));
   $('#confirm-restore').addEventListener('change', e => patchSettings({ confirmRestore: e.target.checked }));
+  const profileInput = $('#profile-label');
+  if (profileInput) {
+    let labelDebounce;
+    profileInput.addEventListener('input', (e) => {
+      clearTimeout(labelDebounce);
+      const v = e.target.value;
+      labelDebounce = setTimeout(async () => {
+        await patchSettings({ profileLabel: v });
+        await applyProfileChip();
+      }, 300);
+    });
+  }
   $('#clear-all').addEventListener('click', clearAll);
 
   $('#search').addEventListener('input', e => { state.query = e.target.value; renderTimeline(); });
+
+  // Live refresh: when the background writes a new snapshot (auto-snapshot,
+  // crash recovery, etc.) the dashboard updates without a manual refresh.
+  setupStorageListener();
 
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;

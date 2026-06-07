@@ -1,7 +1,7 @@
 // Tab Vault — background service worker.
 //
 // Responsibilities:
-//   * onInstalled / onStartup bootstrapping
+//   * onInstalled / onStartup bootstrapping (per-profile id, retention repair)
 //   * Scheduled auto-snapshots via chrome.alarms
 //   * Live (debounced) snapshots for crash recovery
 //   * Crash detection on startup
@@ -15,34 +15,57 @@ import {
   putSnapshot, deleteSnapshot, renameSnapshot, setPinned,
   writeLive, readLive, clearLive,
   getSession, setSession,
+  getProfileId, shortProfileId,
+  repairIndex,
   storageUsage
 } from './lib/storage.js';
 import { restoreSnapshot } from './lib/restore.js';
 import { bundleIntoSessions, groupByDay, computeDiff, summarizeDiff } from './lib/sessions.js';
+import { validateImportPayload, ValidationError } from './lib/validate.js';
 import { uuid, debounce, formatDateFile } from './lib/utils.js';
 
 // =====================================================================
 // HARD INVARIANT: Tab Vault never opens tabs or windows automatically.
 // chrome.tabs.create and chrome.windows.create are reachable from exactly
-// one code path: the `restore` message, which is only sent by an explicit
-// user click in the popup or dashboard. Everything else (alarms, tab
-// events, startup, crash detection) only READS and WRITES storage.
-// Do not add automatic-restore behaviour without removing this comment.
+// one code path: the `restore` / `restore-latest` message, which is only
+// sent by an explicit user click in the popup or dashboard. Everything
+// else (alarms, tab events, startup, crash detection) only READS and
+// WRITES storage. Do not add automatic-restore behaviour without
+// removing this comment.
 // =====================================================================
 
 const ALARM_AUTO = 'tv-auto-snapshot';
 const ALARM_LIVE_HEARTBEAT = 'tv-live-heartbeat';
 
+// --------------------------------------------------------------------------
+// Init gate — every message handler awaits this so we never operate on
+// half-initialised state (e.g. settings still loading on first install).
+// --------------------------------------------------------------------------
+let _ready = null;
+function initOnce() {
+  if (_ready) return _ready;
+  _ready = (async () => {
+    // Ensure defaults are persisted (no-op on subsequent runs).
+    const settings = await getSettings();
+    await setSettings(settings);
+    // Ensure a profile id exists.
+    await getProfileId();
+    // Repair any orphaned index entries from a previous run.
+    try { await repairIndex(); } catch (e) { console.warn('Tab Vault: index repair failed', e); }
+  })();
+  return _ready;
+}
+
 // ---------- Lifecycle ----------
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const settings = await getSettings();
-  await setSettings(settings); // persist defaults
+  await initOnce();
   await beginSession({ snapshotKind: 'startup' });
   await rescheduleAlarms();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  await initOnce();
   await beginSession({ snapshotKind: 'startup' });
   await rescheduleAlarms();
 });
@@ -52,8 +75,8 @@ async function beginSession({ snapshotKind }) {
   const newSessionId = uuid();
   await setSession(newSessionId);
 
-  // If we had a live snapshot from a *different* session that has tabs,
-  // surface it as a crash-recovery candidate by promoting it to a real snapshot.
+  // Crash recovery: if a previous-session live snapshot exists, promote it
+  // into the history as a "crash" snapshot. We DO NOT auto-open those tabs.
   if (prevLive.snap && prevLive.meta && prevLive.meta.sessionId !== newSessionId) {
     const tabs = countTabs(prevLive.snap);
     if (tabs > 0) {
@@ -93,12 +116,12 @@ async function rescheduleAlarms() {
     });
   }
   if (s.liveSnapshotEnabled) {
-    // Heartbeat at 1-minute resolution; this is the minimum chrome.alarms allows.
     chrome.alarms.create(ALARM_LIVE_HEARTBEAT, { delayInMinutes: 1, periodInMinutes: 1 });
   }
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  await initOnce();
   if (alarm.name === ALARM_AUTO) {
     try { await captureAndPersist({ type: 'auto' }); } catch (e) { console.warn('auto snapshot failed', e); }
   } else if (alarm.name === ALARM_LIVE_HEARTBEAT) {
@@ -147,6 +170,7 @@ hookTabEvents();
 // ---------- Commands ----------
 
 chrome.commands.onCommand.addListener(async (command) => {
+  await initOnce();
   if (command === 'save-snapshot') {
     const snap = await captureAndPersist({ type: 'manual' });
     await setBadge(String(snap.stats.tabCount), '#16a34a');
@@ -159,7 +183,10 @@ chrome.commands.onCommand.addListener(async (command) => {
 // ---------- Messaging ----------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  handleMessage(msg).then(sendResponse).catch(e => sendResponse({ error: String(e?.message || e) }));
+  initOnce()
+    .then(() => handleMessage(msg))
+    .then(sendResponse)
+    .catch(e => sendResponse({ error: String(e?.message || e) }));
   return true; // keep channel open for async response
 });
 
@@ -181,6 +208,11 @@ async function handleMessage(msg) {
       }
       return { windows: filtered.length, tabs, groups, pinned };
     }
+    case 'get-profile': {
+      const profileId = await getProfileId();
+      const s = await getSettings();
+      return { profileId, profileLabel: s.profileLabel || '', shortId: shortProfileId(profileId) };
+    }
     case 'list-index': {
       return { index: await getIndex(), usage: await storageUsage() };
     }
@@ -188,18 +220,11 @@ async function handleMessage(msg) {
       const s = await getSettings();
       const idx = await getIndex();
       const sessions = bundleIntoSessions(idx, s.sessionGapMinutes ?? 60);
-      // Attach a diff summary for every snapshot vs. the previous one in the
-      // same session. We only pre-compute the summary (light); full diffs are
-      // fetched on demand via 'get-diff'.
       for (const sess of sessions) {
-        // snapshots in sess.snapshots are newest-first; pair each with the
-        // older neighbour for "what changed since last save".
         for (let i = 0; i < sess.snapshots.length; i++) {
           const cur = sess.snapshots[i];
           const prev = sess.snapshots[i + 1] || null;
           if (!prev) { cur._diffSummary = null; continue; }
-          // Cheap derivation from stats only — for the badge we don't need the
-          // full URL diff. The detail view will compute the precise diff.
           const da = (cur.stats?.tabCount ?? 0) - (prev.stats?.tabCount ?? 0);
           if (da > 0) cur._diffSummary = `+${da}`;
           else if (da < 0) cur._diffSummary = `−${-da}`;
@@ -217,13 +242,13 @@ async function handleMessage(msg) {
       return { diff, summary: summarizeDiff(diff) };
     }
     case 'restore-latest': {
-      // Convenience shortcut for the popup's single restore button.
-      // Still routed through the same explicit `restore` plumbing — there is
-      // NO automatic invocation of this path anywhere in the codebase.
       const idx = await getIndex();
       if (idx.length === 0) throw new Error('No snapshots to restore');
       const newest = idx[0];
       const snap = await getSnapshot(newest.id);
+      if (!snap) throw new Error('Snapshot no longer available');
+      // Safety net: take a pre-restore snapshot so the user can always roll back.
+      try { await captureAndPersist({ type: 'pre-restore', name: 'Before restore (auto-saved)' }); } catch {}
       const result = await restoreSnapshot(snap, { mode: msg.mode || 'new-windows' });
       return { restored: result.restored, id: newest.id, name: newest.name };
     }
@@ -242,11 +267,9 @@ async function handleMessage(msg) {
       return { snapshot: await setPinned(msg.id, msg.pinned) };
     case 'restore': {
       const snap = await getSnapshot(msg.id);
-      if (!snap) throw new Error('Snapshot not found');
-      // Defensive: save current state before destructive restores so users can undo.
-      if (msg.options?.closeOthers) {
-        try { await captureAndPersist({ type: 'pre-restore' }); } catch {}
-      }
+      if (!snap) throw new Error('Snapshot no longer available');
+      // Safety net: always take a pre-restore snapshot before any restore.
+      try { await captureAndPersist({ type: 'pre-restore', name: 'Before restore (auto-saved)' }); } catch {}
       const selection = deserializeSelection(msg.options?.selection);
       const result = await restoreSnapshot(snap, { ...msg.options, selection });
       return result;
@@ -259,27 +282,59 @@ async function handleMessage(msg) {
       return { settings: next };
     }
     case 'export-all': {
+      const settings = await getSettings();
+      const profileId = await getProfileId();
       const data = {
         kind: 'tab-vault-export',
         version: 1,
         exportedAt: Date.now(),
-        settings: await getSettings(),
+        profileId,
+        profileLabel: settings.profileLabel || '',
+        settings,
         snapshots: await getAllSnapshots()
       };
-      const filename = `tab-vault-${formatDateFile(Date.now())}.json`;
+      const filename = exportFilename(settings.profileLabel, profileId, Date.now());
       return { data, filename };
     }
     case 'export-one': {
       const snap = await getSnapshot(msg.id);
       if (!snap) throw new Error('Snapshot not found');
+      const settings = await getSettings();
+      const profileId = await getProfileId();
       return {
-        data: { kind: 'tab-vault-snapshot', version: 1, snapshot: snap },
-        filename: `tab-vault-${formatDateFile(snap.timestamp)}.json`
+        data: {
+          kind: 'tab-vault-snapshot',
+          version: 1,
+          profileId,
+          profileLabel: settings.profileLabel || '',
+          snapshot: snap
+        },
+        filename: exportFilename(settings.profileLabel, profileId, snap.timestamp)
       };
     }
+    case 'inspect-import': {
+      // Read-only: returns metadata about a payload so the UI can show a
+      // cross-profile warning before committing to the import.
+      try {
+        const parsed = validateImportPayload(msg.payload);
+        const profileId = await getProfileId();
+        const settings = await getSettings();
+        return {
+          ok: true,
+          kind: parsed.kind,
+          count: parsed.snapshots.length,
+          fromProfileId: parsed.profileId,
+          fromProfileLabel: parsed.profileLabel,
+          currentProfileId: profileId,
+          currentProfileLabel: settings.profileLabel || '',
+          isSameProfile: !parsed.profileId || parsed.profileId === profileId
+        };
+      } catch (e) {
+        return { ok: false, validationError: e instanceof ValidationError ? e.message : String(e?.message || e) };
+      }
+    }
     case 'import': {
-      const result = await importPayload(msg.payload, !!msg.merge);
-      return result;
+      return importPayload(msg.payload, !!msg.merge);
     }
     case 'clear-all': {
       const idx = await getIndex();
@@ -304,32 +359,37 @@ function deserializeSelection(sel) {
 }
 
 async function importPayload(payload, merge) {
-  if (!payload || typeof payload !== 'object') throw new Error('Invalid import payload');
+  // Validate strictly before touching storage. If anything is malformed we
+  // reject the whole import — never partially apply.
+  let parsed;
+  try { parsed = validateImportPayload(payload); }
+  catch (e) {
+    if (e instanceof ValidationError) throw new Error(`Invalid file: ${e.message}`);
+    throw e;
+  }
+
+  // For multi-snapshot exports, optional non-merge mode wipes existing data.
+  if (parsed.kind === 'export' && !merge) {
+    const idx = await getIndex();
+    for (const e of idx) await deleteSnapshot(e.id);
+  }
+
   let imported = 0;
-  const accept = async (snap) => {
-    if (!snap || !Array.isArray(snap.windows)) return;
+  for (const snap of parsed.snapshots) {
     const copy = { ...snap, id: uuid(), type: snap.type || 'import' };
     if (!copy.name) copy.name = `Imported • ${imported + 1}`;
     if (!copy.timestamp) copy.timestamp = Date.now();
+    copy.pinned = !!copy.pinned;
     await putSnapshot(copy);
     imported += 1;
-  };
-
-  if (payload.kind === 'tab-vault-snapshot' && payload.snapshot) {
-    await accept(payload.snapshot);
-  } else if (payload.kind === 'tab-vault-export' && Array.isArray(payload.snapshots)) {
-    if (!merge) {
-      const idx = await getIndex();
-      for (const e of idx) await deleteSnapshot(e.id);
-    }
-    for (const s of payload.snapshots) await accept(s);
-  } else if (Array.isArray(payload.windows)) {
-    // Looks like a bare snapshot
-    await accept(payload);
-  } else {
-    throw new Error('Unrecognized file format');
   }
-  return { imported };
+  return { imported, fromProfileId: parsed.profileId, fromProfileLabel: parsed.profileLabel };
+}
+
+function exportFilename(label, profileId, ts) {
+  const safeLabel = (label || '').trim().replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 32);
+  const tag = safeLabel || shortProfileId(profileId);
+  return `tab-vault-${tag}-${formatDateFile(ts || Date.now())}.json`;
 }
 
 async function setBadge(text, color) {

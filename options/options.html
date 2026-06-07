@@ -12,6 +12,7 @@
       <span class="logo" aria-hidden="true"></span>
       <h1>Tab Vault</h1>
       <span class="version">history</span>
+      <span class="profile-chip" id="profile-chip" title="This profile's vault is independent">–</span>
     </div>
     <nav class="hdr-actions">
       <button id="save-now" class="primary" title="Save a snapshot right now (Ctrl/Cmd+S)">
@@ -70,6 +71,10 @@
           <option value="light">Light</option>
           <option value="dark">Dark</option>
         </select>
+      </label>
+      <label class="field">
+        <span>Profile label (this Chrome profile)</span>
+        <input type="text" id="profile-label" maxlength="32" placeholder="e.g. Work, Personal" />
       </label>
       <label class="field-row">
         <input type="checkbox" id="live-enabled" />

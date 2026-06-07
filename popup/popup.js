@@ -27,6 +27,24 @@ async function applyTheme() {
   else if (settings.theme === 'dark') document.documentElement.dataset.theme = 'dark';
 }
 
+async function applyProfileChip() {
+  try {
+    const p = await send({ type: 'get-profile' });
+    const chip = $('#profile-chip');
+    if (p.profileLabel) {
+      chip.textContent = p.profileLabel;
+      chip.classList.remove('unlabeled');
+      chip.title = `Profile: ${p.profileLabel} (id ${p.shortId}). Each Chrome profile keeps its own history.`;
+    } else {
+      chip.textContent = p.shortId;
+      chip.classList.add('unlabeled');
+      chip.title = `Unnamed profile (id ${p.shortId}). Set a label in the dashboard settings to make it easier to recognise.`;
+    }
+  } catch {
+    $('#profile-chip').textContent = '?';
+  }
+}
+
 async function loadStats() {
   try {
     const s = await send({ type: 'get-current-stats' });
@@ -121,6 +139,7 @@ async function restoreLatest() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   await applyTheme();
+  applyProfileChip();
   $('#save-now').addEventListener('click', saveNow);
   $('#refresh').addEventListener('click', () => { loadStats(); loadRecent(); });
   $('#see-all').addEventListener('click', () => chrome.runtime.openOptionsPage());

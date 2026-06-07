@@ -4,6 +4,8 @@ A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have
 
 > **Tab Vault never opens tabs on its own.** The only code path that opens a tab or window runs when you click a **Restore** button. Lifecycle events, alarms, tab events, and crash detection only read and write storage.
 
+> **Multi-profile aware.** Each Chrome / Brave profile keeps its own independent history (enforced by the browser's per-profile storage). Set a label like "Work" or "Personal" in settings and it shows up in the popup header and bakes into export filenames. Importing a backup from another profile triggers a confirmation.
+
 ## What it does
 
 - **Periodic snapshots** of every tab across every Chrome / Brave window, including tab groups (title + color + collapsed state) and pinned tabs. Default cadence is every 10 minutes; configurable.
@@ -68,7 +70,22 @@ Click any snapshot to see:
 | Max retained snapshots (pinned always kept) | 200 |
 | Crash-recovery live snapshot | Enabled (read-only) |
 | Confirm before restore | Enabled |
+| Profile label (this Chrome profile) | empty |
 | Theme | Auto (system) |
+
+## Reliability guarantees
+
+| Risk | Mitigation |
+|---|---|
+| Two snapshot writes racing (alarm + manual click) | Promise-chain mutex serializes every index-touching operation in `lib/storage.js` |
+| Storage quota exceeded | `safeSet()` catches `QUOTA*` errors, prunes oldest unpinned snapshot, retries once; pinned never touched |
+| Index points at a deleted key | `repairIndex()` runs on every service worker startup |
+| Snapshot rendered then deleted before view | Dashboard shows "no longer available" state instead of crashing |
+| Restore opens the wrong tabs | A `pre-restore` snapshot is auto-saved before every restore — undo is one click |
+| Malformed import file | Strict shape validation (`lib/validate.js`) rejects the entire file before any storage write |
+| Cross-profile import confusion | `inspect-import` flags the profile mismatch; confirmation prompt before commit |
+| Service worker killed mid-task | Background re-inits via `_ready` gate on first message after restart; no half-state visible |
+| Auto-snapshots while dashboard is open | `chrome.storage.onChanged` listener refreshes timeline live |
 
 ## Snapshot file format (v1)
 
@@ -127,16 +144,22 @@ chromeextension/
 └── tests/                     # 173 tests covering libs, background, no-auto-open
 ```
 
-## Tests
+## Tests (235 total)
 
 ```
-node tests/test.mjs            # 89 lib + integration tests
-node tests/test_background.mjs # 39 background message-handler tests
-node tests/test_sessions.mjs   # 32 session bundling + diff tests
-node tests/test_no_autoopen.mjs # 13 invariant tests: nothing auto-opens tabs
+node tests/test.mjs               # 89 lib + integration tests
+node tests/test_background.mjs    # 39 background message-handler tests
+node tests/test_sessions.mjs      # 32 session bundling + diff tests
+node tests/test_no_autoopen.mjs   # 13 invariant tests: nothing auto-opens tabs
+node tests/test_storage_safety.mjs # 39 mutex / quota / repair / validation tests
+node tests/test_profile.mjs       # 23 multi-profile + import validation tests
 ```
 
-The no-auto-open suite verifies that **across every non-restore code path** (install, startup, alarms, tab events, group events, every non-restore message, keyboard shortcuts), `chrome.tabs.create` and `chrome.windows.create` are called **zero** times. Only an explicit `restore` or `restore-latest` message opens anything.
+The **no-auto-open** suite verifies that across every non-restore code path (install, startup, alarms, tab events, group events, every non-restore message, keyboard shortcuts), `chrome.tabs.create` and `chrome.windows.create` are called **zero** times. Only an explicit `restore` or `restore-latest` message opens anything.
+
+The **storage-safety** suite verifies the write mutex serializes concurrent operations, the quota-retry handler prunes oldest unpinned snapshots when storage is full (and never touches pinned ones), the index repair removes orphans, and the import validator rejects malformed JSON without partial application.
+
+The **profile** suite verifies per-profile UUID stability, label persistence, export envelope embedding, cross-profile detection on import, and that the dashboard never confuses one profile's history for another.
 
 ## Privacy
 
