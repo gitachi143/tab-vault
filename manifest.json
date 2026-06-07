@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Tab Vault — Snapshot & Restore",
+  "name": "Tab Vault — Tab History",
   "short_name": "Tab Vault",
-  "version": "1.0.0",
-  "description": "Snapshot every tab, group, and window across Chrome and Brave. Auto-backup, crash recovery, selective restore, JSON export.",
+  "version": "1.1.0",
+  "description": "Observer-only tab history for Chrome and Brave. Logs every tab/group/window over time, bundles into sessions, daily off-device backup. Never opens tabs.",
   "minimum_chrome_version": "116",
   "permissions": [
     "tabs",
