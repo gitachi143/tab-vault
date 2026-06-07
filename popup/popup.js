@@ -1,4 +1,4 @@
-import { relativeTime, bytesHuman } from '../lib/utils.js';
+import { relativeTime, bytesHuman, detectBrowserName } from '../lib/utils.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 
@@ -27,18 +27,26 @@ async function applyTheme() {
   else if (settings.theme === 'dark') document.documentElement.dataset.theme = 'dark';
 }
 
+async function reportBrowser() {
+  try {
+    const name = await detectBrowserName();
+    if (name) await send({ type: 'set-browser-info', name });
+  } catch { /* ignore */ }
+}
+
 async function applyProfileChip() {
   try {
     const p = await send({ type: 'get-profile' });
     const chip = $('#profile-chip');
+    const browser = p.browserName || 'Chrome';
     if (p.profileLabel) {
-      chip.textContent = p.profileLabel;
+      chip.textContent = `${browser} · ${p.profileLabel}`;
       chip.classList.remove('unlabeled');
-      chip.title = `Profile: ${p.profileLabel} (id ${p.shortId}). Each Chrome profile keeps its own history.`;
+      chip.title = `${browser} — profile "${p.profileLabel}" (id ${p.shortId}). Each browser profile keeps its own history.`;
     } else {
-      chip.textContent = p.shortId;
+      chip.textContent = `${browser} · ${p.shortId}`;
       chip.classList.add('unlabeled');
-      chip.title = `Unnamed profile (id ${p.shortId}). Set a label in the dashboard settings to make it easier to recognise.`;
+      chip.title = `${browser} — unnamed profile (id ${p.shortId}). Set a label in the dashboard settings.`;
     }
   } catch {
     $('#profile-chip').textContent = '?';
@@ -139,6 +147,7 @@ async function restoreLatest() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   await applyTheme();
+  await reportBrowser();
   applyProfileChip();
   $('#save-now').addEventListener('click', saveNow);
   $('#refresh').addEventListener('click', () => { loadStats(); loadRecent(); });

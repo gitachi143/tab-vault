@@ -143,6 +143,43 @@ await grp('strict import validation rejects malformed snapshot via import messag
 });
 
 // --------------------------------------------------------------------------
+await grp('set-browser-info round-trips and feeds get-profile', async () => {
+  reset();
+  await sendMessage({ type: 'set-browser-info', name: 'Brave' });
+  const p = await sendMessage({ type: 'get-profile' });
+  eq(p.browserName, 'Brave', 'browser name persisted');
+
+  await sendMessage({ type: 'set-browser-info', name: 'Chrome' });
+  const p2 = await sendMessage({ type: 'get-profile' });
+  eq(p2.browserName, 'Chrome', 'browser name overwritten');
+});
+
+await grp('export-all envelope includes browserName from storage', async () => {
+  reset();
+  await sendMessage({ type: 'set-browser-info', name: 'Brave' });
+  await sendMessage({ type: 'set-settings', patch: { profileLabel: 'My-Brave', maxSnapshots: 0 } });
+  seedWindow({ tabs: [{ url: 'https://x.com/' }] });
+  await sendMessage({ type: 'capture' });
+  const exp = await sendMessage({ type: 'export-all' });
+  eq(exp.data.browserName, 'Brave', 'export envelope has browserName=Brave');
+  eq(exp.data.profileLabel, 'My-Brave', 'export envelope has label');
+});
+
+await grp('export-one envelope includes browserName', async () => {
+  reset();
+  await sendMessage({ type: 'set-browser-info', name: 'Edge' });
+  seedWindow({ tabs: [{ url: 'https://x.com/' }] });
+  const { snapshot } = await sendMessage({ type: 'capture' });
+  const exp = await sendMessage({ type: 'export-one', id: snapshot.id });
+  eq(exp.data.browserName, 'Edge', 'export-one envelope has browserName=Edge');
+});
+
+await grp('default browserName is Chrome when unset', async () => {
+  reset();
+  const p = await sendMessage({ type: 'get-profile' });
+  eq(p.browserName, 'Chrome', 'default Chrome');
+});
+
 await grp('import propagates profileId from envelope for downstream UI', async () => {
   reset();
   // Build an export from this profile, then mutate to a different profile id

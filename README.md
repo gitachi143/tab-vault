@@ -6,7 +6,7 @@ A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have
 
 > **Tab Vault never opens tabs on its own.** The only code path that opens a tab or window runs when you click a **Restore** button. Lifecycle events, alarms, tab events, hourly backups, and crash detection only read and write storage.
 
-> **Multi-profile aware.** Each Chrome / Brave profile keeps its own independent history (enforced by the browser's per-profile storage). Set a label like "Work" or "Personal" in settings and it shows up in the popup header and bakes into export filenames. Importing a backup from another profile triggers a confirmation.
+> **Multi-profile + multi-browser aware.** Each Chrome / Brave / Edge profile keeps its own independent history (enforced by the browser's per-profile storage). The popup chip shows `Browser · Label` (e.g. `Brave · Work`) so you always know which vault you're looking at. Set a label like "Work" or "Personal" in settings and it shows up in the chip and bakes into export filenames. Importing a backup from another profile triggers a confirmation. If you point multiple installs at the same scheduled-backup webhook, you'll receive a separate email per browser+profile combo, with the browser name in the subject line.
 
 > **Scheduled off-device backups** (opt-in, default once-a-day): the extension can also bundle your snapshots into a JSON file on a fixed interval (30 min … weekly) and either save it to your `Downloads/tab-vault/` folder, POST it to an HTTPS endpoint you control, or both. Use the included Google Apps Script template in `integrations/apps-script-mailer/` to receive these as daily emails from your own Gmail to your own Gmail — no third-party services.
 
@@ -80,15 +80,20 @@ git pull
 ```
 Then back in `chrome://extensions`, click the **refresh icon** on the Tab Vault card. Your existing snapshots are kept.
 
-### Use across multiple Chrome profiles
+### Use across multiple browsers and profiles
 
-Each Chrome / Brave profile runs its own independent copy of the extension's storage. To install for a second profile:
+Each Chrome / Brave / Edge profile runs its own independent copy of the extension's storage. To install elsewhere:
 
-1. Switch to the other profile (top-right avatar menu).
-2. Repeat Step 2 above — open `chrome://extensions` *in that profile*, Developer mode on, Load unpacked, select the same folder.
-3. Open the Tab Vault dashboard in each profile and set a **Profile label** ("Work", "Personal", etc.) so you can tell them apart at a glance.
+1. **Different profile (same browser):** switch via the top-right avatar menu. Repeat Step 2 — open `chrome://extensions` *in that profile*, Developer mode on, Load unpacked, select the same folder.
+2. **Different browser entirely:** open the equivalent extensions page (`brave://extensions`, `edge://extensions`, etc.), Developer mode on, Load unpacked, select the same folder.
+3. In each install's dashboard, set a **Profile label** ("Work", "Personal", etc.) so you can tell them apart.
 
-Each profile's snapshots are stored separately and never bleed across. Exports are tagged with the profile id and label so backups don't get confused.
+What you get with multiple installs:
+
+- **Separate snapshots.** Each install captures only the tabs in *its* browser+profile. They never bleed across.
+- **Separate popup chip.** Reads `Brave · Work`, `Chrome · Personal`, etc. — auto-detected via `navigator.brave?.isBrave()` for Brave and User-Agent for others.
+- **Separate emails.** If you point every install at the same Apps Script webhook, you get distinct emails per install. The subject is `[Tab Vault] <Browser> · <Label> — N snapshots` so they're easy to filter.
+- **Separate exports.** Export filenames include browser-aware profile labels too.
 
 ---
 
@@ -368,7 +373,7 @@ chromeextension/
 └── tests/                     # 173 tests covering libs, background, no-auto-open
 ```
 
-## Tests (254 total)
+## Tests (260 total)
 
 ```
 node tests/test.mjs               # 89 lib + integration tests
@@ -376,7 +381,7 @@ node tests/test_background.mjs    # 39 background message-handler tests
 node tests/test_sessions.mjs      # 32 session bundling + diff tests
 node tests/test_no_autoopen.mjs   # 32 invariant tests: nothing auto-opens/closes tabs
 node tests/test_storage_safety.mjs # 39 mutex / quota / repair / validation tests
-node tests/test_profile.mjs       # 23 multi-profile + import validation tests
+node tests/test_profile.mjs       # 29 multi-profile/browser + import validation tests
 ```
 
 The **no-auto-open** suite verifies that across every non-restore code path (install, startup, alarms, tab events, group events, every non-restore message, keyboard shortcuts), `chrome.tabs.create` and `chrome.windows.create` are called **zero** times. Only an explicit `restore` or `restore-latest` message opens anything.

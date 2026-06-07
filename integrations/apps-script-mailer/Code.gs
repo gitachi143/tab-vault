@@ -37,7 +37,9 @@ function doPost(e) {
     }
     const data = payload.data || payload;
     const filename = payload.filename || 'tab-vault-backup.json';
-    const profileLabel = payload.profileLabel || data.profileLabel || '(unnamed profile)';
+    const profileLabel = payload.profileLabel || data.profileLabel || '';
+    const browserName = payload.browserName || data.browserName || 'Chrome';
+    const profileId = payload.profileId || data.profileId || '';
     const snapshotCount = payload.snapshotCount ?? (Array.isArray(data.snapshots) ? data.snapshots.length : 0);
     const exportedAt = payload.exportedAt || data.exportedAt || Date.now();
 
@@ -49,14 +51,21 @@ function doPost(e) {
       return json({ ok: false, error: 'cannot resolve active user email; re-deploy with "Execute as: Me"' });
     }
 
-    const subject = `[Tab Vault] ${profileLabel} — ${snapshotCount} snapshot${snapshotCount === 1 ? '' : 's'}`;
+    // Subject distinguishes browsers AND profiles so multi-install setups get
+    // clearly separable emails. Examples:
+    //   [Tab Vault] Brave · Work — 42 snapshots
+    //   [Tab Vault] Chrome · 1a2b3c4d — 38 snapshots   (no label set)
+    const labelOrId = profileLabel || (profileId ? profileId.slice(0, 8) : 'unknown');
+    const subject = `[Tab Vault] ${browserName} · ${labelOrId} — ${snapshotCount} snapshot${snapshotCount === 1 ? '' : 's'}`;
     const body = [
       `Tab Vault backup`,
       ``,
-      `Profile:     ${profileLabel}`,
+      `Browser:     ${browserName}`,
+      `Profile:     ${profileLabel || '(unnamed — set a label in Tab Vault settings)'}`,
+      `Profile id:  ${profileId || '(missing)'}`,
       `Snapshots:   ${snapshotCount}`,
       `Generated:   ${new Date(exportedAt).toString()}`,
-      `Trigger:     ${payload.reason || data.reason || 'hourly'}`,
+      `Trigger:     ${payload.reason || data.reason || 'scheduled'}`,
       ``,
       `The full JSON is attached. To restore it, drop the file into Tab Vault → Import.`
     ].join('\n');

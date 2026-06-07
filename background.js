@@ -16,6 +16,7 @@ import {
   writeLive, readLive, clearLive,
   getSession, setSession,
   getProfileId, shortProfileId,
+  getBrowserInfo, setBrowserInfo,
   repairIndex,
   storageUsage
 } from './lib/storage.js';
@@ -268,8 +269,17 @@ async function handleMessage(msg) {
     case 'get-profile': {
       const profileId = await getProfileId();
       const s = await getSettings();
-      return { profileId, profileLabel: s.profileLabel || '', shortId: shortProfileId(profileId) };
+      const browser = await getBrowserInfo();
+      return {
+        profileId,
+        profileLabel: s.profileLabel || '',
+        shortId: shortProfileId(profileId),
+        browserName: browser.name || 'Chrome'
+      };
     }
+    case 'set-browser-info':
+      if (msg.name) await setBrowserInfo(String(msg.name));
+      return { ok: true };
     case 'list-index': {
       return { index: await getIndex(), usage: await storageUsage() };
     }
@@ -341,12 +351,14 @@ async function handleMessage(msg) {
     case 'export-all': {
       const settings = await getSettings();
       const profileId = await getProfileId();
+      const browser = await getBrowserInfo();
       const data = {
         kind: 'tab-vault-export',
         version: 1,
         exportedAt: Date.now(),
         profileId,
         profileLabel: settings.profileLabel || '',
+        browserName: browser.name || 'Chrome',
         settings,
         snapshots: await getAllSnapshots()
       };
@@ -358,12 +370,14 @@ async function handleMessage(msg) {
       if (!snap) throw new Error('Snapshot not found');
       const settings = await getSettings();
       const profileId = await getProfileId();
+      const browser = await getBrowserInfo();
       return {
         data: {
           kind: 'tab-vault-snapshot',
           version: 1,
           profileId,
           profileLabel: settings.profileLabel || '',
+          browserName: browser.name || 'Chrome',
           snapshot: snap
         },
         filename: exportFilename(settings.profileLabel, profileId, snap.timestamp)
