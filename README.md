@@ -2,7 +2,7 @@
 
 A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have open over time**, bundles snapshots into sessions like Google Docs version history, and lets you browse, search, and diff the history.
 
-> **Tab Vault is observer-only.** It has zero ability to open, close, navigate, focus, move, or pin tabs. There is no restore feature in this build — the user has a separate tool for that. Tab Vault only reads the browser state, writes snapshots to local storage, and optionally exports them to a JSON file or HTTPS webhook.
+> **Observer-only capture + explicit-only restore.** Tab Vault's capture path (alarms, tab events, lifecycle, scheduled backup) *never* opens tabs. The single restore code path fires only when you drop a Tab Vault JSON file onto the dashboard (or use the "Restore from file…" button), pick which windows to open in the preview modal, and click Open.
 
 > **Multi-profile + multi-browser aware.** Each Chrome / Brave / Edge profile keeps its own independent history (enforced by the browser's per-profile storage). The popup chip shows `Browser · Label` (e.g. `Brave · Work`) so you always know which vault you're looking at. Set a label like "Work" or "Personal" in settings and it shows up in the chip and bakes into export filenames. Importing a backup from another profile triggers a confirmation. If you point multiple installs at the same scheduled-backup webhook, you'll receive a separate email per browser+profile combo, with the browser name in the subject line.
 
@@ -24,14 +24,13 @@ A polished Chrome / Brave extension (Manifest V3) that **logs every tab you have
   - `Ctrl/Cmd + Shift + E` — open the history dashboard
   - Inside the dashboard: `Ctrl/Cmd + S` save · `Ctrl/Cmd + /` focus search.
 
-## What it explicitly does NOT do
+## What it explicitly does NOT do (except via the restore modal)
 
-- Open tabs. Ever. Not on click, not on schedule, not on crash recovery.
-- Close, move, navigate, focus, or pin tabs.
-- Modify any browser state.
-- Make any network request other than the user-configured backup webhook.
+Capture, alarms, tab events, scheduled backup, keyboard shortcuts, install/startup — none of them ever call any of the mutating Chrome APIs. Enforced by a static source-file scan in `tests/test_no_autoopen.mjs` that fails the build if anyone adds one of the forbidden calls outside `lib/restore.js`.
 
-If you want restoration, use your separate restore tool. Tab Vault gives you the **history + the JSON backup**; that's its job.
+The one exception:
+
+- **Restore from file** (`Restore from file…` button in the dashboard, or drop a JSON on the page) — opens the preview modal. If you then click Open, one `chrome.windows.create` per selected window fires. Nothing else. Any restore attempt from any other code path is a bug.
 
 ## Install from GitHub (Chrome or Brave)
 
@@ -180,14 +179,24 @@ Everything is in `chrome.storage.local` (per-profile, isolated by Chrome itself)
   - **Changes since previous snapshot** — two columns ("Opened" / "Closed") listing the URLs that came and went.
   - **Windows and tab groups** — exactly as they were at that moment, with favicons, pinned markers, group colors.
 
-### How to bring tabs back
+### How to bring tabs back — three ways
 
-Tab Vault doesn't open tabs itself. The history is available in two places:
+1. **Restore from file** (built into the dashboard) — click **Restore from file…** in the header, or drag-drop the JSON anywhere on the dashboard. A preview modal opens listing every window in the file with tab counts, state, focused indicator, and titles. You can:
+   - Pick a specific snapshot (when the file contains many)
+   - Expand any window to see all its tabs
+   - Click **Open this window** on any single card
+   - Tick checkboxes on multiple cards → **Open selected**
+   - **Open all windows** at once
+   - Or **Add to history** (no tabs opened) — merges the file into the timeline for browsing only
+2. **Browse the dashboard timeline.** Any past snapshot has a ⎘ copy button next to each tab row so you can grab a single URL without opening a window.
+3. **Companion CLI** — `scripts/restore_to_chrome.py` reopens tabs from the terminal (for automation), same JSON as input:
+   ```bash
+   python3 scripts/restore_to_chrome.py ~/Downloads/tab-vault-....json --window 3
+   ```
 
-1. **Browse the dashboard.** Click any snapshot in the timeline — the detail pane lists every URL with title and favicon. Use the **⎘ copy** button next to a row to copy a single URL.
-2. **Export to JSON.** Dashboard header → **Export** downloads a complete backup file. Hand that file to your separate restore tool.
+Restoration is always explicit: install, startup, alarms, crash detection, and every other lifecycle path do **nothing** to your tabs. Only clicking Open in the modal (or invoking the CLI) opens anything.
 
-The scheduled backup (settings → ⚙) does this automatically — daily by default — to your `Downloads/tab-vault/` folder, or POSTs it to a webhook of your choice.
+The scheduled backup (settings → ⚙) writes the same JSON automatically — daily by default — to your `Downloads/tab-vault/` folder, or POSTs it to a webhook of your choice.
 
 ### Pin snapshots you care about
 
@@ -304,8 +313,8 @@ Click any snapshot to see:
 
 | Risk | Mitigation |
 |---|---|
-| Tab Vault interfering with Chrome's session restore | Tab Vault never calls `chrome.tabs.create/update/remove/move` or `chrome.windows.create/remove` anywhere. Verified by 108 invariant tests (including a static source-file scan) covering install, startup, alarms, every tab/window/group event, every message handler, scheduled-backup firings, and keyboard shortcuts. |
-| Tab Vault opening tabs by accident | Impossible — `lib/restore.js` was deleted; no module imports `chrome.tabs.create` anywhere; tests fail the build if any source file does. |
+| Tab Vault interfering with Chrome's session restore | Tab Vault's capture path never calls `chrome.tabs.create/update/remove/move` or `chrome.windows.create/remove`. Verified by 121 invariant tests (including a static source-file scan) covering install, startup, alarms, every tab/window/group event, every message handler, scheduled-backup firings, and keyboard shortcuts. |
+| Tab Vault opening tabs behind your back | The only place that opens tabs is `lib/restore.js`, only via the `restore-from-file` message, only sent by an explicit click in the Import & Restore modal. The static source scan fails the build if any other file adds a mutating Chrome API call. |
 | Two snapshot writes racing (alarm + manual click) | Promise-chain mutex serializes every index-touching operation in `lib/storage.js` |
 | Storage quota exceeded | `safeSet()` catches `QUOTA*` errors, prunes oldest unpinned snapshot, retries once; pinned never touched |
 | Index points at a deleted key | `repairIndex()` runs on every service worker startup |
@@ -362,25 +371,31 @@ chromeextension/
 ├── lib/
 │   ├── utils.js
 │   ├── storage.js             # chrome.storage.local + index
-│   ├── snapshot.js            # capture
-│   └── sessions.js            # session bundling + diffs (pure)
+│   ├── snapshot.js            # capture (read-only)
+│   ├── sessions.js            # session bundling + diffs (pure)
+│   ├── backup.js              # scheduled backup builder (download + webhook)
+│   ├── validate.js            # strict import validation
+│   └── restore.js             # ONLY code path that opens windows
 ├── popup/                     # toolbar popup
-├── options/                   # full dashboard
+├── options/                   # full dashboard (incl. Import & Restore modal)
 ├── icons/                     # 16/32/48/128 PNG (generated)
 ├── scripts/make_icons.py      # regenerate icons (stdlib only)
-└── tests/                     # 173 tests covering libs, background, no-auto-open
+├── scripts/restore_to_chrome.py # companion CLI restorer
+├── integrations/apps-script-mailer/ # email-forwarder template
+└── tests/                     # 373 tests across 8 suites
 ```
 
-## Tests (327 total)
+## Tests (373 total)
 
 ```
 node tests/test.mjs                # 52 lib + integration tests
 node tests/test_background.mjs     # 37 background message-handler tests
 node tests/test_sessions.mjs       # 32 session bundling + diff tests
-node tests/test_no_autoopen.mjs    # 108 observer-only invariant tests (incl. static source scan)
+node tests/test_no_autoopen.mjs    # 121 invariant tests: only lib/restore.js opens (incl. static source scan)
 node tests/test_storage_safety.mjs # 39 mutex / quota / repair / validation tests
 node tests/test_profile.mjs        # 29 multi-profile/browser + import validation tests
 node tests/test_resilience.mjs     # 30 crash recovery, stress, race, edge-case tests
+node tests/test_restore.mjs        # 33 restore-from-file: order, state, empty, internal-URL, e2e
 ```
 
 ### Resilience coverage
@@ -400,12 +415,13 @@ The `test_resilience.mjs` suite simulates real-world failure modes:
 - **Restore from a pruned snapshot** returns a clean error.
 - **Chrome restores tabs *after* our startup snapshot** — the live heartbeat catches up; nothing is lost.
 
-The **observer-only** suite is the strongest invariant in the codebase:
+The **no-auto-open** suite is the strongest invariant in the codebase:
 
-- A **static check** opens every source file (`background.js`, all of `lib/`, popup, dashboard) and asserts none of them contain `chrome.tabs.create / .update / .remove / .move`, `chrome.windows.create / .remove / .update`, `chrome.tabs.group`, or `chrome.tabGroups.update`. If any of those strings appears as a real call (not in a comment), the suite fails the build.
-- A **file-existence check** asserts `lib/restore.js` is gone.
-- **Runtime checks** fire every event (install, startup, alarms, tab/window/group events, keyboard shortcuts) and every message handler and verify `chrome.tabs.create / .update / .remove`, `chrome.windows.create / .remove`, `chrome.tabs.group` counters all stay at zero.
-- Confirms `restore` and `restore-latest` messages return "Unknown message" — they simply don't exist anymore.
+- A **static check** opens every source file (`background.js`, all of `lib/`, popup, dashboard) and asserts none of them contain `chrome.tabs.create / .update / .remove / .move / .group`, `chrome.windows.create / .remove / .update`, or `chrome.tabGroups.update`. The single whitelisted call is `chrome.windows.create` inside `lib/restore.js` — every other source file's build fails if it adds even one such call.
+- A **restore-module whitelist check** asserts `lib/restore.js` exists and calls only `chrome.windows.create` (not the other forbidden APIs).
+- **Runtime checks** fire every event (install, startup, alarms, tab/window/group events, keyboard shortcuts) and every message handler and verify `chrome.tabs.create / .update / .remove / .move / .group`, `chrome.windows.create / .remove` counters all stay at zero.
+- Confirms the legacy `restore` and `restore-latest` messages return "Unknown message" — the new API is `restore-from-file`.
+- Confirms `restore-from-file` is the **only** message that opens windows, and that firing every other event/message after a restore doesn't produce any additional opens.
 
 The **storage-safety** suite verifies the write mutex serializes concurrent operations, the quota-retry handler prunes oldest unpinned snapshots when storage is full (and never touches pinned ones), the index repair removes orphans, and the import validator rejects malformed JSON without partial application.
 

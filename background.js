@@ -21,32 +21,33 @@ import {
   storageUsage
 } from './lib/storage.js';
 import { bundleIntoSessions, groupByDay, computeDiff, summarizeDiff } from './lib/sessions.js';
+import { restoreWindows } from './lib/restore.js';
 import { validateImportPayload, ValidationError } from './lib/validate.js';
 import { buildBackupPayload, downloadBackup, postToWebhook } from './lib/backup.js';
 import { uuid, debounce, formatDateFile } from './lib/utils.js';
 
 // =====================================================================
-// HARD INVARIANT — OBSERVER-ONLY
+// HARD INVARIANT — OBSERVER-ONLY CAPTURE, EXPLICIT-ONLY RESTORE
 //
-// Tab Vault has NO ability to open, close, navigate, focus, move, replace,
-// pin, group, or otherwise mutate any tab or window. There is no restore
-// capability in this build. The user uses a separate tool for restoration.
+// Capture / observation paths NEVER open or modify tabs. The ONLY code
+// that opens tabs lives in lib/restore.js, reached via exactly one
+// message: `restore-from-file`, sent only by an explicit click in the
+// dashboard's "Import & Restore" modal (user drags a JSON file into the
+// dashboard, picks which windows to open, clicks the Open button).
 //
-// What this extension does:
-//   * READS the browser state via chrome.windows.getAll / chrome.tabGroups.query
-//   * WRITES snapshots to chrome.storage.local
-//   * DOWNLOADS JSON backups via chrome.downloads
-//   * POSTS backups to a user-configured HTTPS webhook
+// Allowed mutating call:
+//   * lib/restore.js → chrome.windows.create   (only from restore-from-file)
 //
-// What this extension explicitly does NOT do:
-//   * Call chrome.tabs.create / .update / .remove / .move
-//   * Call chrome.windows.create / .remove / .update
-//   * Call chrome.tabs.group / chrome.tabGroups.update
-//   * Auto-restore on crash, startup, or any other lifecycle event
+// Forbidden everywhere else (capture path, lifecycle, alarms, every other
+// message, tab events, group events, keyboard shortcuts, scheduled
+// backup):
+//   * chrome.tabs.create / .update / .remove / .move / .group
+//   * chrome.windows.create / .remove / .update
+//   * chrome.tabGroups.update
 //
-// Chrome's native "Continue where you left off" session restore is the
-// only thing that opens tabs on this user's machine. Tab Vault is a
-// passive observer that records what Chrome has open — nothing more.
+// Static check in tests/test_no_autoopen.mjs enforces this — it scans
+// every source file and fails the build if any of those APIs are called
+// outside lib/restore.js.
 // =====================================================================
 
 const ALARM_AUTO = 'tv-auto-snapshot';
@@ -383,6 +384,15 @@ async function handleMessage(msg) {
     }
     case 'import': {
       return importPayload(msg.payload, !!msg.merge);
+    }
+    case 'restore-from-file': {
+      // Open one browser window per provided saved-window object.
+      // The dashboard parses+validates the JSON, then sends ONLY the
+      // user-selected windows here. We don't re-validate the entire file —
+      // we trust the caller (which is our own dashboard).
+      if (!Array.isArray(msg.windows)) throw new Error('Invalid restore payload');
+      const result = await restoreWindows(msg.windows);
+      return result;
     }
     case 'clear-all': {
       const idx = await getIndex();

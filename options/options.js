@@ -760,16 +760,300 @@ function setupStorageListener() {
 
 // ---------- Wiring ----------
 
+// ---------- Restore-from-file flow ----------
+
+function formatTs(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+async function openRestoreFromFile(file) {
+  const text = await file.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { return toast('Invalid JSON file.'); }
+  // Validate via the same path Import uses
+  let info;
+  try { info = await send({ type: 'inspect-import', payload }); }
+  catch (e) { return toast(`Failed to read file: ${e.message}`); }
+  if (!info.ok) return toast(`Invalid file: ${info.validationError}`);
+  // Build a "snapshots" array from whatever envelope this file has
+  const snapshots =
+    payload.kind === 'tab-vault-export' && Array.isArray(payload.snapshots) ? payload.snapshots :
+    payload.kind === 'tab-vault-snapshot' && payload.snapshot ? [payload.snapshot] :
+    Array.isArray(payload.windows) ? [payload] : [];
+  if (snapshots.length === 0) return toast('No snapshots in this file.');
+  showRestoreModal(file.name, snapshots, payload);
+}
+
+function showRestoreModal(filename, snapshots, payload) {
+  const root = $('#modal-root');
+  root.innerHTML = '';
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal wide';
+  back.append(box);
+  root.append(back);
+
+  // Header
+  const h = document.createElement('h3');
+  h.textContent = 'Restore from file';
+  box.append(h);
+  const subtitle = document.createElement('div');
+  subtitle.className = 'muted';
+  subtitle.style.fontSize = '12px';
+  subtitle.style.margin = '-4px 0 10px';
+  const profileLabel = payload.profileLabel || payload.profileId?.slice(0, 8) || '(no profile metadata)';
+  const browser = payload.browserName || 'Chrome';
+  subtitle.textContent = `${filename} · ${snapshots.length} snapshot${snapshots.length === 1 ? '' : 's'} · from ${browser} · ${profileLabel}`;
+  box.append(subtitle);
+
+  // Pick newest snapshot by default
+  const sorted = [...snapshots].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  let snapIndex = 0;
+
+  // Snapshot picker (only if >1)
+  if (sorted.length > 1) {
+    const picker = document.createElement('div');
+    picker.className = 'snap-picker';
+    const label = document.createElement('span');
+    label.className = 'muted';
+    label.textContent = 'Snapshot:';
+    const sel = document.createElement('select');
+    sorted.forEach((s, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      const tabs = s.stats?.tabCount ?? (s.windows?.reduce((n, w) => n + (w.tabs?.length || 0), 0) || 0);
+      const wins = s.stats?.windowCount ?? (s.windows?.length || 0);
+      opt.textContent = `${s.name || '(unnamed)'} — ${s.type || '?'} · ${tabs} tabs · ${wins} windows · ${formatTs(s.timestamp || 0)}`;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => {
+      snapIndex = parseInt(sel.value, 10) || 0;
+      renderWindows();
+    });
+    picker.append(label, sel);
+    box.append(picker);
+  } else {
+    const oneline = document.createElement('div');
+    oneline.className = 'muted';
+    oneline.style.fontSize = '12px';
+    oneline.style.margin = '0 0 8px';
+    const s = sorted[0];
+    const tabs = s.stats?.tabCount ?? 0;
+    const wins = s.stats?.windowCount ?? 0;
+    oneline.textContent = `${s.name || '(unnamed)'} — ${s.type || '?'} · ${tabs} tabs · ${wins} windows · ${formatTs(s.timestamp || 0)}`;
+    box.append(oneline);
+  }
+
+  // Scrollable window list
+  const scroll = document.createElement('div');
+  scroll.className = 'modal-scroll';
+  box.append(scroll);
+
+  // Action bar
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'secondary';
+  cancelBtn.textContent = 'Close';
+  cancelBtn.addEventListener('click', () => done());
+  const addToHistory = document.createElement('button');
+  addToHistory.className = 'secondary';
+  addToHistory.textContent = 'Add to history (no tabs opened)';
+  addToHistory.addEventListener('click', async () => {
+    addToHistory.disabled = true;
+    try {
+      const r = await send({ type: 'import', payload, merge: true });
+      toast(`Added ${r.imported} snapshot${r.imported === 1 ? '' : 's'} to history`);
+      await loadTimeline();
+      done();
+    } catch (e) {
+      toast(`Failed: ${e.message}`);
+      addToHistory.disabled = false;
+    }
+  });
+  const openSelectedBtn = document.createElement('button');
+  openSelectedBtn.className = 'secondary';
+  openSelectedBtn.textContent = 'Open selected';
+  openSelectedBtn.addEventListener('click', () => openWindows(getSelected()));
+  const openAllBtn = document.createElement('button');
+  openAllBtn.className = 'primary';
+  openAllBtn.textContent = 'Open all windows';
+  openAllBtn.addEventListener('click', () => openWindows(sorted[snapIndex].windows || []));
+  actions.append(cancelBtn, addToHistory, openSelectedBtn, openAllBtn);
+  box.append(actions);
+
+  // Track which windows the user has selected (set of indices in sorted[snapIndex].windows)
+  let selected = new Set();
+
+  function done() { root.innerHTML = ''; }
+
+  back.addEventListener('click', (e) => { if (e.target === back) done(); });
+  document.addEventListener('keydown', escClose, { once: true });
+  function escClose(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      root.innerHTML = '';
+    } else {
+      // re-arm
+      document.addEventListener('keydown', escClose, { once: true });
+    }
+  }
+
+  function getSelected() {
+    const snap = sorted[snapIndex];
+    return Array.from(selected).map(i => snap.windows[i]).filter(Boolean);
+  }
+
+  async function openWindows(windows) {
+    if (!windows || windows.length === 0) {
+      toast('No windows selected');
+      return;
+    }
+    const tabCount = windows.reduce((n, w) => n + (w.tabs?.length || 0), 0);
+    if (!confirm(`Open ${windows.length} window${windows.length === 1 ? '' : 's'} containing ${tabCount} tab${tabCount === 1 ? '' : 's'}?`)) return;
+    openAllBtn.disabled = true; openSelectedBtn.disabled = true;
+    try {
+      const r = await send({ type: 'restore-from-file', windows });
+      toast(`Opened ${r.openedTabs} tabs across ${r.openedWindows} window${r.openedWindows === 1 ? '' : 's'}`);
+    } catch (e) {
+      toast(`Failed: ${e.message}`);
+    } finally {
+      openAllBtn.disabled = false; openSelectedBtn.disabled = false;
+    }
+  }
+
+  function renderWindows() {
+    selected = new Set();
+    scroll.innerHTML = '';
+    const windows = sorted[snapIndex].windows || [];
+    windows.forEach((w, i) => scroll.append(renderWindowCard(w, i)));
+  }
+
+  function renderWindowCard(w, idx) {
+    const wrap = document.createElement('section');
+    wrap.className = 'restore-window collapsed';
+    const head = document.createElement('header');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.title = 'Select this window for "Open selected"';
+    cb.addEventListener('click', e => e.stopPropagation());
+    cb.addEventListener('change', () => {
+      if (cb.checked) selected.add(idx);
+      else selected.delete(idx);
+    });
+    const title = document.createElement('span');
+    title.className = 'title';
+    const tabs = w.tabs || [];
+    const focused = w.focused ? ' [focused]' : '';
+    title.textContent = `Window ${idx + 1}${focused}`;
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    const groupCount = (w.groups || []).length;
+    meta.textContent = `${tabs.length} tabs · ${w.state || 'normal'}${groupCount ? ` · ${groupCount} groups` : ''}`;
+    const openOneBtn = document.createElement('button');
+    openOneBtn.textContent = 'Open this window';
+    openOneBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ok = confirm(`Open this window with ${tabs.length} tab${tabs.length === 1 ? '' : 's'}?`);
+      if (!ok) return;
+      openOneBtn.disabled = true;
+      const original = openOneBtn.textContent;
+      openOneBtn.textContent = 'Opening…';
+      try {
+        const r = await send({ type: 'restore-from-file', windows: [w] });
+        openOneBtn.textContent = `Opened (${r.openedTabs} tabs)`;
+        openOneBtn.classList.add('opened');
+        toast(`Opened window ${idx + 1} (${r.openedTabs} tabs)`);
+      } catch (err) {
+        openOneBtn.textContent = original;
+        openOneBtn.disabled = false;
+        toast(`Failed: ${err.message}`);
+      }
+    });
+    const chev = document.createElement('span');
+    chev.className = 'chev';
+    chev.textContent = '▸';
+    head.append(cb, title, meta, openOneBtn, chev);
+    head.addEventListener('click', (e) => {
+      if (e.target === cb || e.target === openOneBtn) return;
+      wrap.classList.toggle('collapsed');
+      chev.textContent = wrap.classList.contains('collapsed') ? '▸' : '▾';
+    });
+
+    const body = document.createElement('div');
+    body.className = 'body';
+    const ul = document.createElement('ul');
+    const sortedTabs = tabs.slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    for (const t of sortedTabs) {
+      const li = document.createElement('li');
+      const titleSpan = document.createElement('span');
+      titleSpan.textContent = t.title || safeHostname(t.url) || '(untitled)';
+      const badges = document.createElement('span');
+      if (t.active)  { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'active'; badges.append(b); }
+      if (t.pinned)  { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'pinned'; badges.append(b); }
+      const urlSpan = document.createElement('div');
+      urlSpan.className = 'url';
+      urlSpan.textContent = t.url;
+      li.append(titleSpan, badges, urlSpan);
+      ul.append(li);
+    }
+    body.append(ul);
+    wrap.append(head, body);
+    return wrap;
+  }
+
+  renderWindows();
+}
+
+// Drag-and-drop a JSON file anywhere on the dashboard
+function setupDropZone() {
+  const overlay = $('#drop-overlay');
+  let depth = 0;
+  window.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    depth += 1;
+    overlay.hidden = false;
+    e.preventDefault();
+  });
+  window.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer) return;
+    if (overlay.hidden) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  window.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) overlay.hidden = true;
+  });
+  window.addEventListener('drop', (e) => {
+    depth = 0;
+    overlay.hidden = true;
+    if (!e.dataTransfer || e.dataTransfer.files.length === 0) return;
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!/\.json$/i.test(file.name)) return toast('Drop a .json file to restore.');
+    openRestoreFromFile(file);
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   await reportBrowser();
   await loadSettings();
   await loadTimeline();
+  setupDropZone();
 
   $('#save-now').addEventListener('click', saveNow);
   $('#export-all').addEventListener('click', exportAll);
   $('#import-file').addEventListener('change', (e) => {
     const f = e.target.files?.[0];
     if (f) importFile(f);
+    e.target.value = '';
+  });
+  $('#restore-file').addEventListener('change', (e) => {
+    const f = e.target.files?.[0];
+    if (f) openRestoreFromFile(f);
     e.target.value = '';
   });
   $('#settings-toggle').addEventListener('click', () => {

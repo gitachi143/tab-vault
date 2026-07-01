@@ -65,14 +65,32 @@ const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
 
 // --------------------------------------------------------------------------
-await grp('static: lib/restore.js does not exist in the codebase', () => {
+await grp('static: lib/restore.js exists and is the ONLY whitelisted opener', () => {
   const restorePath = path.join(ROOT, 'lib', 'restore.js');
-  assert(!fs.existsSync(restorePath), 'lib/restore.js is gone');
+  assert(fs.existsSync(restorePath), 'lib/restore.js exists');
+  const src = fs.readFileSync(restorePath, 'utf8');
+  // The only mutating Chrome call allowed anywhere is chrome.windows.create in this file.
+  assert(/chrome\.windows\.create\(/.test(src), 'lib/restore.js calls chrome.windows.create (expected)');
+  // It must NOT call any other forbidden API.
+  const otherForbidden = [
+    'chrome.tabs.create(',
+    'chrome.tabs.update(',
+    'chrome.tabs.remove(',
+    'chrome.tabs.move(',
+    'chrome.tabs.group(',
+    'chrome.windows.remove(',
+    'chrome.windows.update(',
+    'chrome.tabGroups.update('
+  ];
+  for (const f of otherForbidden) {
+    assert(!src.includes(f), `lib/restore.js must not contain ${f}`);
+  }
 });
 
 // --------------------------------------------------------------------------
-await grp('static: no source file calls a tab/window-mutating Chrome API', () => {
-  // Walk lib/ and background.js and verify no mutating call sites exist.
+await grp('static: no source file OTHER THAN lib/restore.js opens or mutates tabs', () => {
+  // lib/restore.js is the single allowed opener (via chrome.windows.create).
+  // Every other source file must contain ZERO mutating Chrome API calls.
   const targets = [
     'background.js',
     'lib/utils.js',
@@ -98,8 +116,6 @@ await grp('static: no source file calls a tab/window-mutating Chrome API', () =>
   for (const t of targets) {
     const src = fs.readFileSync(path.join(ROOT, t), 'utf8');
     for (const f of forbiddenCalls) {
-      // Allow mentions inside string literals or comments — match an actual call:
-      // a forbidden-call pattern not preceded by // or inside a single-line comment
       const lines = src.split('\n');
       const hits = lines.filter(line => {
         const trimmed = line.trim();
@@ -199,16 +215,47 @@ await grp('runtime: every message handler is observer-only', async () => {
 });
 
 // --------------------------------------------------------------------------
-await grp('runtime: `restore` and `restore-latest` messages are removed', async () => {
+await grp('runtime: legacy `restore` / `restore-latest` messages are removed', async () => {
   reset();
   seedWindow({ tabs: [{ url: 'https://x.com/' }] });
   let err1;
   try { await sendMessage({ type: 'restore', id: 'anything' }); } catch (e) { err1 = e; }
-  assert(err1 && /Unknown message/.test(err1.message), 'restore is gone');
+  assert(err1 && /Unknown message/.test(err1.message), 'legacy `restore` is still gone');
 
   let err2;
   try { await sendMessage({ type: 'restore-latest' }); } catch (e) { err2 = e; }
-  assert(err2 && /Unknown message/.test(err2.message), 'restore-latest is gone');
+  assert(err2 && /Unknown message/.test(err2.message), 'legacy `restore-latest` is still gone');
+});
+
+// --------------------------------------------------------------------------
+await grp('runtime: `restore-from-file` is the ONLY message that opens windows', async () => {
+  reset();
+  resetCounters();
+  seedWindow({ tabs: [{ url: 'https://a.com/' }] });
+
+  // Sending the new message with a valid window object DOES open a window.
+  await sendMessage({ type: 'restore-from-file', windows: [
+    { tabs: [{ url: 'https://restored.com/', index: 0 }], state: 'normal' }
+  ] });
+  assert(windowCreates === 1, `restore-from-file opens a window (got ${windowCreates})`);
+
+  // Now fire everything else again — no additional opens
+  resetCounters();
+  await sendMessage({ type: 'ping' });
+  await sendMessage({ type: 'capture' });
+  await sendMessage({ type: 'list-index' });
+  await sendMessage({ type: 'get-timeline' });
+  harness.chromeApi.alarms._fire('tv-auto-snapshot');
+  harness.chromeApi.alarms._fire('tv-live-heartbeat');
+  harness.chromeApi.alarms._fire('tv-hourly-backup');
+  harness.chromeApi.commands.onCommand.emit('save-snapshot');
+  harness.chromeApi.tabs.onCreated.emit({});
+  harness.chromeApi.tabs.onUpdated.emit(0, {}, {});
+  harness.chromeApi.windows.onCreated.emit({});
+  await new Promise(r => setTimeout(r, 50));
+  eq(tabCreates, 0, 'no tab creates from non-restore paths');
+  eq(windowCreates, 0, 'no window creates from non-restore paths');
+  eq(tabUpdates, 0, 'no tab updates');
 });
 
 // --------------------------------------------------------------------------

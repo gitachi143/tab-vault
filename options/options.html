@@ -19,9 +19,13 @@
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M17 3H5a2 2 0 0 0-2 2v14l4-2 4 2 4-2 4 2V5a2 2 0 0 0-2-2zm0 13.27-2-1-4 2-4-2-2 1V5h12v11.27z"/></svg>
         Save snapshot
       </button>
-      <label class="file-btn" title="Import JSON backup">
+      <label class="file-btn" title="Import JSON backup into history (does not open tabs)">
         Import
         <input type="file" id="import-file" accept="application/json,.json" hidden />
+      </label>
+      <label class="file-btn primary-outline" title="Open a Tab Vault JSON, preview windows, restore selected ones to the browser">
+        Restore from file…
+        <input type="file" id="restore-file" accept="application/json,.json" hidden />
       </label>
       <button id="export-all" class="secondary" title="Export all snapshots to a JSON file">Export</button>
       <button id="settings-toggle" class="secondary" title="Settings">⚙</button>
@@ -162,6 +166,12 @@
   </main>
 
   <div id="modal-root"></div>
+  <div id="drop-overlay" class="drop-overlay" hidden>
+    <div class="drop-overlay-inner">
+      <div class="drop-icon">⬇</div>
+      <div class="drop-msg">Drop a Tab Vault JSON to preview &amp; restore</div>
+    </div>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script type="module" src="options.js"></script>

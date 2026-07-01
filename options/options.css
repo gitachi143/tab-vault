@@ -364,6 +364,80 @@ button, select, input { font: inherit; color: inherit; }
   background: var(--surface); border-radius: 12px; border: 1px solid var(--border);
   padding: 18px; max-width: 420px; width: 92%; box-shadow: var(--shadow);
 }
+.modal.wide { max-width: 760px; max-height: 86vh; display: flex; flex-direction: column; }
+.modal.wide h3 { margin-top: 0; }
+.modal.wide .modal-scroll { overflow: auto; flex: 1; margin: 4px -4px; padding: 4px; }
+.modal.wide .modal-actions { padding-top: 12px; border-top: 1px solid var(--border); margin-top: 10px; }
+
+.file-btn.primary-outline {
+  color: var(--accent); border-color: var(--accent);
+  background: var(--surface);
+}
+.file-btn.primary-outline:hover {
+  background: rgba(79,70,229,0.10);
+}
+
+.snap-picker {
+  display: flex; gap: 8px; align-items: center;
+  padding: 8px 10px; margin: 4px 0 10px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+}
+.snap-picker select {
+  flex: 1; padding: 5px 7px; background: var(--surface); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; font: inherit;
+}
+.snap-picker .muted { font-size: 12px; }
+
+.restore-window {
+  border: 1px solid var(--border); border-radius: 10px;
+  margin: 8px 0; background: var(--bg);
+  overflow: hidden;
+}
+.restore-window header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; background: var(--surface-2);
+  cursor: pointer;
+}
+.restore-window header input[type="checkbox"] { accent-color: var(--accent); }
+.restore-window header .title { font-weight: 600; flex: 1; }
+.restore-window header .meta { font-size: 12px; color: var(--fg-3); }
+.restore-window header .chev { color: var(--fg-3); font-size: 11px; margin-left: 6px; }
+.restore-window header button {
+  font: inherit; cursor: pointer; padding: 4px 10px; border-radius: 6px;
+  background: var(--accent); color: var(--accent-fg); border: 1px solid var(--accent);
+  font-size: 12px;
+}
+.restore-window header button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.restore-window header button:disabled { opacity: 0.5; cursor: default; }
+.restore-window header button.opened { background: var(--success); border-color: var(--success); }
+.restore-window .body { padding: 8px 12px; max-height: 240px; overflow: auto; }
+.restore-window.collapsed .body { display: none; }
+.restore-window ul { list-style: none; margin: 0; padding: 0; }
+.restore-window li {
+  font-size: 12px; padding: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.restore-window li .url { color: var(--fg-3); font-size: 11px; }
+.restore-window li .badge {
+  display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 999px;
+  background: rgba(79,70,229,0.14); color: var(--accent);
+  margin-left: 6px; vertical-align: 2px;
+}
+
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(79,70,229,0.18);
+  border: 4px dashed var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.drop-overlay-inner {
+  background: var(--surface); padding: 30px 50px; border-radius: 16px;
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  text-align: center;
+}
+.drop-overlay .drop-icon { font-size: 48px; color: var(--accent); }
+.drop-overlay .drop-msg  { font-size: 16px; margin-top: 6px; }
 .modal h3 { margin-top: 0; }
 .modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
 
